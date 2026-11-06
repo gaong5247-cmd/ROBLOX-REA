@@ -8,6 +8,8 @@ executor APIs, network discovery or arbitrary filesystem reads are involved.
 from __future__ import annotations
 
 from .analysis import analyze_scene, compare_scenes, find_nodes
+from .audit import audit_reconstruction
+from .spatial import query_nearby
 from .storage import CaptureStore
 
 
@@ -44,6 +46,18 @@ def create_mcp():
     def list_native_exports(limit: int = 30) -> list[dict]:
         """List local native RBXM exports. Does not access or execute their contents."""
         return store.list_native(limit)
+
+    @mcp.tool()
+    def audit_map(capture_id: str) -> dict:
+        """Explain what JSON reconstruction preserves, skips or approximates."""
+        return audit_reconstruction(store.read_capture(capture_id))
+
+    @mcp.tool()
+    def nearby_objects(capture_id: str, x: float, y: float, z: float,
+                       radius: float = 20.0, limit: int = 30,
+                       collidable_only: bool = False) -> dict:
+        """Find objects near a world coordinate using approximate world-space bounding boxes."""
+        return query_nearby(store.read_capture(capture_id), x, y, z, radius, limit, collidable_only)
 
     return mcp
 

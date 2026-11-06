@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any
 
 from .schema import validate_scene
+from .spatial import part_bounds
 
 
 def _bbox(nodes: list[dict]) -> dict | None:
@@ -17,12 +18,13 @@ def _bbox(nodes: list[dict]) -> dict | None:
         size, cf = p.get("size"), p.get("cframe")
         if size is None or cf is None:
             continue
-        # Roblox CFrame:GetComponents() -> xyz + row-major 3x3 rotation.
-        half = [abs(n) / 2 for n in size]
-        radius = [sum(abs(cf[3 + i * 3 + j]) * half[j] for j in range(3)) for i in range(3)]
+        bounds = part_bounds(node)
+        if bounds is None:
+            continue
+        box_lo, box_hi = bounds
         for axis in range(3):
-            low[axis] = min(low[axis], cf[axis] - radius[axis])
-            high[axis] = max(high[axis], cf[axis] + radius[axis])
+            low[axis] = min(low[axis], box_lo[axis])
+            high[axis] = max(high[axis], box_hi[axis])
         parts += 1
     if not parts:
         return None
@@ -77,6 +79,27 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
         k for k in set(a) & set(b)
         if a[k]["class"] != b[k]["class"] or a[k].get("properties", {}) != b[k].get("properties", {})
     )
+    changes = []
+    for path in modified[:limit]:
+        old, new = a[path], b[path]
+        differences = {}
+        if old["class"] != new["class"]:
+            differences["class"] = {"before": old["class"], "after": new["class"]}
+        if old["name"] != new["name"]:
+            differences["name"] = {"before": old["name"], "after": new["name"]}
+        old_p, new_p = old.get("properties", {}), new.get("properties", {})
+        properties = {}
+        for property_name in sorted(old_p.keys() | new_p.keys()):
+            if old_p.get(property_name) != new_p.get(property_name) or (property_name in old_p) != (property_name in new_p):
+                properties[property_name] = {
+                    "before": old_p.get(property_name),
+                    "after": new_p.get(property_name),
+                    "before_present": property_name in old_p,
+                    "after_present": property_name in new_p,
+                }
+        if properties:
+            differences["properties"] = properties
+        changes.append({"path": path, "changes": differences})
     return {
         "before": before.get("capture_id", before["scene_name"]),
         "after": after.get("capture_id", after["scene_name"]),
@@ -84,9 +107,11 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
         "added": added[:limit],
         "removed": removed[:limit],
         "modified": modified[:limit],
+        "modified_details": changes,
         "truncated": any(len(x) > limit for x in (added, removed, modified)),
-        "matching_rule": "stable hierarchy paths (renames appear as remove/add)",
+        "matching_rule": "stable hierarchy paths (renames may appear as remove/add)",
     }
+
 
 
 def find_nodes(scene: dict, query: str, limit: int = 30) -> list[dict]:

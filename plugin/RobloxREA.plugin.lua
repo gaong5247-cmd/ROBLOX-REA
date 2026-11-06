@@ -1,4 +1,4 @@
--- ROBLOX-REA v0.1 | Studio plugin (not a LocalScript or executor script)
+-- ROBLOX-REA v0.2 | Studio plugin (not a LocalScript or executor script)
 -- Purpose: document, back up and reconstruct maps in experiences you own or may edit.
 -- All network calls are local to http://127.0.0.1:8787 and use a private token.
 -- REA-RBX never reads other running Roblox clients or private server contents.
@@ -13,7 +13,7 @@ local MAX_NODES = 15000
 local toolbar = plugin:CreateToolbar("ROBLOX-REA")
 local toggle = toolbar:CreateButton("ROBLOX-REA", "Open map scanner and reconstruction tools", "")
 local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 450, 570, 350, 420)
-local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v01", widgetInfo)
+local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v02", widgetInfo)
 widget.Title = "ROBLOX-REA · Map Lab"
 
 local root
@@ -101,7 +101,7 @@ local function actionButton(label, callback)
     end)
 end
 
-textLabel("ROBLOX-REA  ·  v0.1", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
+textLabel("ROBLOX-REA  ·  v0.2", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
 textLabel("Select a Model or Folder in Explorer. Outputs go to your local Python bridge; restored models stay in ServerStorage for review.", 55)
 textLabel("Bridge token (printed by: rea-rbx serve)", 20)
 local tokenField = textInput("Paste the local token", 36, true)
@@ -116,7 +116,7 @@ textLabel("Capture ID (from JSON scan)", 20)
 local captureField = textInput("Capture ID appears after scan", 36)
 textLabel("Native model ID (from RBXM backup)", 20)
 local nativeField = textInput("Native ID appears after backup", 36)
-local status = textLabel("Ready. Select your own Studio map.", 58, Color3.fromRGB(180, 231, 198))
+local status = textLabel("Ready. Select your own Studio map.", 82, Color3.fromRGB(180, 231, 198))
 
 local function setStatus(message, isError)
     status.Text = tostring(message)
@@ -359,11 +359,27 @@ local function restoreJson(scene)
         if warning then warnings = warnings + 1 end
     end
     local destination = importFolder()
+    local nodesById = {}
+    for _, node in ipairs(scene.nodes) do
+        nodesById[node.id] = node
+    end
     for _, node in ipairs(scene.nodes) do
         local object = objects[node.id]
         if object then
-            local parent = node.parent_id and objects[node.parent_id] or destination
-            object.Parent = parent or destination
+            -- Preserve as much hierarchy as possible without creating unsupported classes.
+            local parent = destination
+            local parentId = node.parent_id
+            local depth = 0
+            while parentId and depth < MAX_NODES do
+                if objects[parentId] then
+                    parent = objects[parentId]
+                    break
+                end
+                local parentNode = nodesById[parentId]
+                parentId = parentNode and parentNode.parent_id or nil
+                depth = depth + 1
+            end
+            object.Parent = parent
         end
     end
     local rootObject = objects[scene.root_id]
@@ -434,6 +450,28 @@ actionButton("5 · Duplicate locally (Studio clone)", function()
         clone.Parent = importFolder()
         Selection:Set({clone})
         setStatus("Cloned " .. source.Name .. " to ServerStorage.REA_Imports")
+    end)
+end)
+
+actionButton("6 · Compare selection ↔ saved capture", function()
+    doAction("Comparing current Studio map to capture", function()
+        local captureId = captureField.Text:gsub("%s", "")
+        assert(captureId:match("^[0-9a-f]+$") and #captureId == 32, "Enter a 32-character capture ID")
+        local current = scanMap(selectedMap())
+        local response = decoded(request("POST", "/v1/compare/" .. captureId,
+            HttpService:JSONEncode(current), "application/json"))
+        local counts = response.counts
+        local message = "Added: " .. tostring(counts.added) .. " | Removed: "
+            .. tostring(counts.removed) .. " | Changed: " .. tostring(counts.modified)
+        if #response.modified_details > 0 then
+            local entry = response.modified_details[1]
+            message = message .. "\nFirst changed: " .. entry.path
+        elseif #response.added > 0 then
+            message = message .. "\nFirst added: " .. response.added[1]
+        elseif #response.removed > 0 then
+            message = message .. "\nFirst removed: " .. response.removed[1]
+        end
+        setStatus(message)
     end)
 end)
 

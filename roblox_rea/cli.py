@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 from .analysis import analyze_scene, compare_scenes, find_nodes
+from .audit import audit_reconstruction
+from .preview import render_svg
+from .spatial import query_nearby
 from .bridge import DEFAULT_PORT, serve
 from .schema import validate_scene
 from .storage import CaptureStore
@@ -42,6 +45,23 @@ def main(argv: list[str] | None = None) -> int:
     find.add_argument("scene")
     find.add_argument("query")
     find.add_argument("--file", action="store_true")
+    audit = sub.add_parser("audit", help="Explain JSON reconstruction limitations and missing geometry")
+    audit.add_argument("scene")
+    audit.add_argument("--file", action="store_true")
+    near = sub.add_parser("near", help="List parts whose bounding boxes are within a radius")
+    near.add_argument("scene")
+    near.add_argument("x", type=float)
+    near.add_argument("y", type=float)
+    near.add_argument("z", type=float)
+    near.add_argument("--radius", type=float, default=20.0)
+    near.add_argument("--limit", type=int, default=30)
+    near.add_argument("--collidable", action="store_true")
+    near.add_argument("--file", action="store_true")
+    preview = sub.add_parser("preview", help="Generate standalone top-down SVG from JSON geometry")
+    preview.add_argument("scene")
+    preview.add_argument("--file", action="store_true")
+    preview.add_argument("--output", type=Path, default=Path("map_preview.svg"))
+    preview.add_argument("--max-parts", type=int, default=2500)
     sub.add_parser("mcp", help="Run read-only MCP server (requires pip install -e '.[mcp]')")
     args = parser.parse_args(argv)
     try:
@@ -65,6 +85,15 @@ def main(argv: list[str] | None = None) -> int:
             _pretty(compare_scenes(_scene(store, args.before, args.files), _scene(store, args.after, args.files)))
         elif args.command == "find":
             _pretty(find_nodes(_scene(store, args.scene, args.file), args.query))
+        elif args.command == "audit":
+            _pretty(audit_reconstruction(_scene(store, args.scene, args.file)))
+        elif args.command == "near":
+            _pretty(query_nearby(_scene(store, args.scene, args.file), args.x, args.y, args.z,
+                                 args.radius, args.limit, args.collidable))
+        elif args.command == "preview":
+            svg = render_svg(_scene(store, args.scene, args.file), args.max_parts)
+            args.output.write_text(svg, encoding="utf-8")
+            _pretty({"output": str(args.output.resolve()), "bytes": len(svg.encode("utf-8"))})
         return 0
     except (OSError, ValueError, ImportError, json.JSONDecodeError) as exc:
         print(f"rea-rbx: {exc}", file=sys.stderr)

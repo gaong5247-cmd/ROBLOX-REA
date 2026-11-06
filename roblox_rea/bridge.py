@@ -7,7 +7,8 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
-from .analysis import analyze_scene
+from .analysis import analyze_scene, compare_scenes
+from .audit import audit_reconstruction
 from .schema import MAX_NATIVE_BYTES, MAX_SCENE_BYTES, SceneError
 from .storage import CaptureStore
 
@@ -49,11 +50,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         provided = self.headers.get("X-REA-Token", "")
         if len(provided) > 256 or not hmac.compare_digest(provided, self.server.token):
+            self.close_connection = True
             self._reply(401, {"error": "Missing or invalid X-REA-Token"})
             return False
         # Reject browser-originated calls. This is a local desktop bridge,
         # never a public web API. Studio plugin requests omit Origin.
         if self.headers.get("Origin"):
+            self.close_connection = True
             self._reply(403, {"error": "Browser origins are not permitted"})
             return False
         return True
@@ -64,7 +67,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self._url()
         if path == "/health":
-            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.1.0"})
+            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.2.0"})
             return
         if not self._authorized():
             return
@@ -79,6 +82,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if rest.endswith("/analysis"):
                     scene = store.read_capture(rest.removesuffix("/analysis"))
                     self._reply(200, analyze_scene(scene))
+                elif rest.endswith("/audit"):
+                    scene = store.read_capture(rest.removesuffix("/audit"))
+                    self._reply(200, audit_reconstruction(scene))
                 else:
                     self._reply(200, store.read_capture(rest))
             elif path.startswith("/v1/native/"):
@@ -92,13 +98,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": str(exc)})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        # Close after every POST; error paths do not necessarily consume the body.
+        # Otherwise unread JSON bytes can be parsed as a second HTTP request.
+        self.close_connection = True
         if not self._authorized():
             return
         path = self._url()
-        if path not in ("/v1/captures", "/v1/native"):
+        compare_id = path.removeprefix("/v1/compare/") if path.startswith("/v1/compare/") else None
+        if path not in ("/v1/captures", "/v1/native") and compare_id is None:
             self._reply(404, {"error": "Unknown endpoint"})
             return
-        cap = MAX_SCENE_BYTES if path == "/v1/captures" else MAX_NATIVE_BYTES
+        cap = MAX_NATIVE_BYTES if path == "/v1/native" else MAX_SCENE_BYTES
         try:
             size = int(self.headers.get("Content-Length", ""))
         except ValueError:
@@ -113,19 +123,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": "Incomplete request"})
             return
         try:
-            if path == "/v1/captures":
-                if not self.headers.get("Content-Type", "").startswith("application/json"):
+            if path == "/v1/captures" or compare_id is not None:
+                if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     self._reply(415, {"error": "Expected application/json"})
                     return
                 doc = json.loads(raw.decode("utf-8"))
-                result = self.server.store.save_capture(doc)
+                if compare_id is None:
+                    result = self.server.store.save_capture(doc)
+                else:
+                    # Comparison is read-only: it never stores or modifies the submitted scene.
+                    result = compare_scenes(self.server.store.read_capture(compare_id), doc)
             else:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/octet-stream":
                     self._reply(415, {"error": "Expected application/octet-stream"})
                     return
                 result = self.server.store.save_native(unquote(self.headers.get("X-REA-Name", "Untitled")), raw)
-            self._reply(201, result)
-        except (SceneError, ValueError, UnicodeError) as exc:
+            self._reply(201 if compare_id is None else 200, result)
+        except (FileNotFoundError, IsADirectoryError):
+            self._reply(404, {"error": "Capture not found"})
+        except (SceneError, ValueError, UnicodeError, TypeError) as exc:
             self._reply(400, {"error": str(exc)})
 
 

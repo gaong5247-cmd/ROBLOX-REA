@@ -99,6 +99,16 @@ def validate_scene(scene: object) -> dict:
         _vector(props, "size", 3)
         _vector(props, "cframe", 12)
         _vector(props, "color", 3)
+        _vector(props, "local_cframe", 12)
+        if "size" in props and any(n <= 0 or n > 1_000_000 for n in props["size"]):
+            raise SceneError("size components must be > 0 and <= 1,000,000 studs")
+        for key in ("cframe", "local_cframe"):
+            if key in props:
+                cf = props[key]
+                if any(abs(n) > 100_000_000 for n in cf[:3]) or any(abs(n) > 1.001 for n in cf[3:]):
+                    raise SceneError(f"{key} components exceed expected Roblox transform bounds")
+        if "color" in props and any(not 0 <= n <= 1 for n in props["color"]):
+            raise SceneError("color components must be between 0 and 1")
 
     if root not in parents or parents[root] is not None:
         raise SceneError("root_id must refer to a root node")
