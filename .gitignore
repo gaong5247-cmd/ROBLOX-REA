@@ -12,3 +12,5 @@ bridge.token
 captures/
 native/
 .env
+packages/
+*.rbxlx

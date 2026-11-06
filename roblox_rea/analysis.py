@@ -56,6 +56,8 @@ def analyze_scene(scene: dict) -> dict[str, Any]:
         "material_counts": dict(materials.most_common()),
         "collidable_parts": collidable,
         "anchored_parts": anchored,
+        "tagged_objects": sum(bool(node.get("tags")) for node in nodes),
+        "attributes_count": sum(len(node.get("attributes", {})) for node in nodes),
         "bounding_box": _bbox(nodes),
         "limitations": [
             "JSON captures do not encode scripts, physical terrain voxels, or full binary mesh geometry.",
@@ -77,7 +79,9 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
     removed = sorted(set(a) - set(b))
     modified = sorted(
         k for k in set(a) & set(b)
-        if a[k]["class"] != b[k]["class"] or a[k].get("properties", {}) != b[k].get("properties", {})
+        if a[k]["class"] != b[k]["class"] or (a[k].get("properties", {}) != b[k].get("properties", {})
+            or a[k].get("tags", []) != b[k].get("tags", [])
+            or a[k].get("attributes", {}) != b[k].get("attributes", {}))
     )
     changes = []
     for path in modified[:limit]:
@@ -99,6 +103,9 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
                 }
         if properties:
             differences["properties"] = properties
+        for name, empty in (("tags", []), ("attributes", {})):
+            if old.get(name, empty) != new.get(name, empty):
+                differences[name] = {"before": old.get(name, empty), "after": new.get(name, empty)}
         changes.append({"path": path, "changes": differences})
     return {
         "before": before.get("capture_id", before["scene_name"]),

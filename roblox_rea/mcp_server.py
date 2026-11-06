@@ -48,6 +48,21 @@ def create_mcp():
         return store.list_native(limit)
 
     @mcp.tool()
+    def list_rescue_packages(limit: int = 30) -> list[dict]:
+        """List locally captured high-fidelity Studio packages, including Terrain tile counts."""
+        return store.list_packages(limit)
+
+    @mcp.tool()
+    def inspect_rescue_package(package_id: str) -> dict:
+        """Read a package manifest and provenance; no raw assets or executable scripts."""
+        return store.read_package(package_id)
+
+    @mcp.tool()
+    def verify_rescue_package(package_id: str) -> dict:
+        """Verify SHA-256 of native files and availability of the scene snapshot."""
+        return store.verify_package(package_id)
+
+    @mcp.tool()
     def audit_map(capture_id: str) -> dict:
         """Explain what JSON reconstruction preserves, skips or approximates."""
         return audit_reconstruction(store.read_capture(capture_id))

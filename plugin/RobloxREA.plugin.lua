@@ -1,4 +1,4 @@
--- ROBLOX-REA v0.2 | Studio plugin (not a LocalScript or executor script)
+-- ROBLOX-REA v0.3 | Studio plugin (not a LocalScript or executor script)
 -- Purpose: document, back up and reconstruct maps in experiences you own or may edit.
 -- All network calls are local to http://127.0.0.1:8787 and use a private token.
 -- REA-RBX never reads other running Roblox clients or private server contents.
@@ -7,13 +7,17 @@ local HttpService = game:GetService("HttpService")
 local Selection = game:GetService("Selection")
 local ServerStorage = game:GetService("ServerStorage")
 local SerializationService = game:GetService("SerializationService")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 local API = "http://127.0.0.1:8787"
 local MAX_NODES = 15000
+local TERRAIN_TILE = 32 -- cells, 128 studs
+local MAX_TERRAIN_TILES = 48
+local MAX_CAPTURE_BYTES = 12 * 1024 * 1024
 local toolbar = plugin:CreateToolbar("ROBLOX-REA")
 local toggle = toolbar:CreateButton("ROBLOX-REA", "Open map scanner and reconstruction tools", "")
 local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 450, 570, 350, 420)
-local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v02", widgetInfo)
+local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v03", widgetInfo)
 widget.Title = "ROBLOX-REA · Map Lab"
 
 local root
@@ -101,7 +105,7 @@ local function actionButton(label, callback)
     end)
 end
 
-textLabel("ROBLOX-REA  ·  v0.2", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
+textLabel("ROBLOX-REA  ·  v0.3", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
 textLabel("Select a Model or Folder in Explorer. Outputs go to your local Python bridge; restored models stay in ServerStorage for review.", 55)
 textLabel("Bridge token (printed by: rea-rbx serve)", 20)
 local tokenField = textInput("Paste the local token", 36, true)
@@ -116,6 +120,13 @@ textLabel("Capture ID (from JSON scan)", 20)
 local captureField = textInput("Capture ID appears after scan", 36)
 textLabel("Native model ID (from RBXM backup)", 20)
 local nativeField = textInput("Native ID appears after backup", 36)
+textLabel("Rescue Package ID (full native + optional Terrain)", 20)
+local packageField = textInput("Package ID appears after rescue capture", 36)
+textLabel("Terrain area margin (studs, selection bounds)", 20)
+local marginField = textInput("16", 34)
+marginField.Text = "16"
+textLabel("Terrain apply confirmation (type APPLY TERRAIN)", 20)
+local confirmTerrain = textInput("Leave empty to keep Terrain unchanged", 34)
 local status = textLabel("Ready. Select your own Studio map.", 82, Color3.fromRGB(180, 231, 198))
 
 local function setStatus(message, isError)
@@ -179,6 +190,74 @@ local function safeProperty(instance, name)
     return ok and value or nil
 end
 
+-- Only primitive and explicitly typed Roblox Attribute values are serialized.
+local function encodeAttribute(v)
+    local t = typeof(v)
+    if t == "string" or t == "boolean" or t == "number" then return v end
+    local values
+    if t == "Vector2" then values = {v.X, v.Y}
+    elseif t == "Vector3" then values = {v.X, v.Y, v.Z}
+    elseif t == "Color3" then values = {v.R, v.G, v.B}
+    elseif t == "CFrame" then values = cframe(v)
+    elseif t == "UDim" then values = {v.Scale, v.Offset}
+    elseif t == "UDim2" then values = {v.X.Scale, v.X.Offset, v.Y.Scale, v.Y.Offset}
+    elseif t == "NumberRange" then values = {v.Min, v.Max}
+    elseif t == "Rect" then values = {v.Min.X, v.Min.Y, v.Max.X, v.Max.Y}
+    elseif t == "BrickColor" then values = {v.Number}
+    else return nil end
+    return {t = t, v = values}
+end
+
+local function metadata(instance)
+    local tags = {}
+    for _, tag in ipairs(instance:GetTags()) do
+        if #tags >= 32 then break end
+        if type(tag) == "string" and #tag > 0 and #tag <= 80 then
+            table.insert(tags, tag)
+        end
+    end
+    table.sort(tags)
+    local attributes = {}
+    local keys = {}
+    for key in pairs(instance:GetAttributes()) do table.insert(keys, key) end
+    table.sort(keys)
+    local original = instance:GetAttributes()
+    for _, key in ipairs(keys) do
+        if #keys > 1000 then break end
+        if type(key) == "string" and #key > 0 and #key <= 100 then
+            local ok, value = pcall(encodeAttribute, original[key])
+            if ok and value ~= nil and #key <= 100 then
+                attributes[key] = value
+                if (function()
+                    local n = 0
+                    for _ in pairs(attributes) do n = n + 1 end
+                    return n
+                end)() >= 32 then break end
+            end
+        end
+    end
+    return tags, attributes
+end
+
+local function decodeAttribute(data)
+    if type(data) ~= "table" or type(data.t) ~= "string" or type(data.v) ~= "table" then
+        return data
+    end
+    local t, a = data.t, data.v
+    if t == "Vector2" and #a == 2 then return Vector2.new(a[1], a[2]) end
+    if t == "Vector3" and #a == 3 then return Vector3.new(a[1], a[2], a[3]) end
+    if t == "Color3" and #a == 3 then return Color3.new(a[1], a[2], a[3]) end
+    if t == "CFrame" and #a == 12 then return CFrame.new(table.unpack(a)) end
+    if t == "UDim" and #a == 2 then return UDim.new(a[1], a[2]) end
+    if t == "UDim2" and #a == 4 then return UDim2.new(table.unpack(a)) end
+    if t == "NumberRange" and #a == 2 then return NumberRange.new(a[1], a[2]) end
+    if t == "Rect" and #a == 4 then
+        return Rect.new(Vector2.new(a[1], a[2]), Vector2.new(a[3], a[4]))
+    end
+    if t == "BrickColor" and #a == 1 then return BrickColor.new(a[1]) end
+    return nil
+end
+
 local function getProperties(instance)
     local p = {}
     if instance:IsA("BasePart") and not instance:IsA("Terrain") then
@@ -218,6 +297,28 @@ local function getProperties(instance)
     elseif instance:IsA("Attachment") then
         p.local_cframe = cframe(instance.CFrame)
         p.visible = instance.Visible
+    elseif instance:IsA("Light") then
+        p.brightness = instance.Brightness
+        p.color = color3(instance.Color)
+        p.enabled = instance.Enabled
+        p.shadows = instance.Shadows
+        if instance:IsA("PointLight") or instance:IsA("SpotLight") then p.range = instance.Range end
+        if instance:IsA("SpotLight") or instance:IsA("SurfaceLight") then
+            p.angle = instance.Angle
+            p.face = instance.Face.Name
+        end
+    elseif instance:IsA("Sound") then
+        p.sound_id = instance.SoundId
+        p.volume = instance.Volume
+        p.playback_speed = instance.PlaybackSpeed
+        p.looped = instance.Looped
+        p.rolloff_max_distance = instance.RollOffMaxDistance
+        p.rolloff_min_distance = instance.RollOffMinDistance
+    elseif instance:IsA("SurfaceAppearance") then
+        p.color_map = instance.ColorMap
+        p.metalness_map = instance.MetalnessMap
+        p.normal_map = instance.NormalMap
+        p.roughness_map = instance.RoughnessMap
     end
     return p
 end
@@ -229,6 +330,7 @@ local function scanMap(source)
         local entry = table.remove(stack)
         assert(#nodes < MAX_NODES, "This capture exceeds the 15,000-node limit")
         local nextId = "n" .. tostring(#nodes + 1)
+        local tags, attrs = metadata(entry.instance)
         local node = {
             id = nextId,
             parent_id = entry.parent_id,
@@ -236,6 +338,8 @@ local function scanMap(source)
             class = entry.instance.ClassName,
             path = entry.path,
             properties = getProperties(entry.instance),
+            tags = tags,
+            attributes = attrs,
         }
         table.insert(nodes, node)
         local children = entry.instance:GetChildren()
@@ -264,13 +368,30 @@ local function scanMap(source)
     }
 end
 
+local busy = false
 local function doAction(title, callback)
+    if busy then
+        setStatus("Another REA action is in progress", true)
+        return
+    end
+    busy = true
     setStatus(title .. "...", false)
     local ok, err = pcall(callback)
     if not ok then
         setStatus(err, true)
         warn("[ROBLOX-REA] " .. tostring(err))
     end
+    busy = false
+end
+
+local function recordChanges(name, callback)
+    local recording = ChangeHistoryService:TryBeginRecording("REA_" .. name, "ROBLOX-REA: " .. name)
+    assert(recording, "Cannot start Studio undo recording (stop Play mode or finish another action)")
+    local ok, result = pcall(callback)
+    ChangeHistoryService:FinishRecording(recording,
+        ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not ok then error(result) end
+    return result
 end
 
 local function importFolder()
@@ -290,6 +411,8 @@ local ALLOWED = {
     CornerWedgePart = true, TrussPart = true, Seat = true, VehicleSeat = true,
     SpawnLocation = true, Decal = true, Texture = true, SpecialMesh = true,
     Attachment = true, MeshPart = true, UnionOperation = true,
+    PointLight = true, SpotLight = true, SurfaceLight = true,
+    Sound = true, SurfaceAppearance = true,
 }
 
 local function reconstructNode(node)
@@ -344,6 +467,35 @@ local function reconstructNode(node)
     elseif object:IsA("Attachment") then
         if p.local_cframe then put("CFrame", CFrame.new(table.unpack(p.local_cframe))) end
         put("Visible", p.visible)
+    elseif object:IsA("Light") then
+        put("Brightness", p.brightness)
+        if p.color then put("Color", Color3.new(table.unpack(p.color))) end
+        put("Enabled", p.enabled)
+        put("Shadows", p.shadows)
+        put("Range", p.range)
+        put("Angle", p.angle)
+        if p.face and Enum.NormalId[p.face] then put("Face", Enum.NormalId[p.face]) end
+    elseif object:IsA("Sound") then
+        put("SoundId", p.sound_id)
+        put("Volume", p.volume)
+        put("PlaybackSpeed", p.playback_speed)
+        put("Looped", p.looped)
+        put("RollOffMaxDistance", p.rolloff_max_distance)
+        put("RollOffMinDistance", p.rolloff_min_distance)
+    elseif object:IsA("SurfaceAppearance") then
+        put("ColorMap", p.color_map)
+        put("MetalnessMap", p.metalness_map)
+        put("NormalMap", p.normal_map)
+        put("RoughnessMap", p.roughness_map)
+    end
+    for _, tag in ipairs(node.tags or {}) do
+        pcall(function() object:AddTag(tag) end)
+    end
+    for key, value in pairs(node.attributes or {}) do
+        local ok, decoded = pcall(decodeAttribute, value)
+        if ok and decoded ~= nil then
+            pcall(function() object:SetAttribute(key, decoded) end)
+        end
     end
     return object, placeholder and ("placeholder for " .. node.class) or nil
 end
@@ -422,11 +574,11 @@ actionButton("3 · Restore native RBXM (Studio)", function()
         local response = request("GET", "/v1/native/" .. nativeId)
         local objects = SerializationService:DeserializeInstancesAsync(buffer.fromstring(response.Body))
         assert(#objects > 0, "The RBXM was empty")
-        local destination = importFolder()
-        for _, object in ipairs(objects) do
-            object.Parent = destination
-        end
-        Selection:Set(objects)
+        recordChanges("Restore native model", function()
+            local destination = importFolder()
+            for _, object in ipairs(objects) do object.Parent = destination end
+            Selection:Set(objects)
+        end)
         setStatus("Restored " .. tostring(#objects) .. " root objects to ServerStorage.REA_Imports")
     end)
 end)
@@ -436,7 +588,9 @@ actionButton("4 · Reconstruct JSON geometry", function()
         local captureId = captureField.Text:gsub("%s", "")
         assert(captureId:match("^[0-9a-f]+$") and #captureId == 32, "Enter a 32-character capture ID")
         local scene = decoded(request("GET", "/v1/captures/" .. captureId))
-        local object, warnings = restoreJson(scene)
+        local object, warnings = recordChanges("Reconstruct JSON", function()
+            return restoreJson(scene)
+        end)
         setStatus("Rebuilt " .. object.Name .. " in ServerStorage. Approximation warnings: " .. tostring(warnings))
     end)
 end)
@@ -447,8 +601,10 @@ actionButton("5 · Duplicate locally (Studio clone)", function()
         local clone = source:Clone()
         assert(clone ~= nil, "Clone failed (check Archivable)")
         clone.Name = source.Name .. "_REA_Copy"
-        clone.Parent = importFolder()
-        Selection:Set({clone})
+        recordChanges("Duplicate model", function()
+            clone.Parent = importFolder()
+            Selection:Set({clone})
+        end)
         setStatus("Cloned " .. source.Name .. " to ServerStorage.REA_Imports")
     end)
 end)
@@ -475,7 +631,267 @@ actionButton("6 · Compare selection ↔ saved capture", function()
     end)
 end)
 
-textLabel("Scope: current Studio project only. Scripts and Terrain are not reproduced by JSON reconstruction. For highest fidelity, use native RBXM.", 66, Color3.fromRGB(166, 175, 191))
+-- Native terrain is captured only within the bounds of the selected Model/Folder/Part,
+-- expanded by a user margin. Tiles include empty cells to avoid silent data loss.
+local function selectionBounds(source)
+    local low = Vector3.new(math.huge, math.huge, math.huge)
+    local high = Vector3.new(-math.huge, -math.huge, -math.huge)
+    local count = 0
+    local function includePart(part)
+        if part:IsA("BasePart") and not part:IsA("Terrain") then
+            local cf, h = part.CFrame, part.Size * 0.5
+            for x = -1, 1, 2 do
+                for y = -1, 1, 2 do
+                    for z = -1, 1, 2 do
+                        local point = cf:PointToWorldSpace(Vector3.new(x * h.X, y * h.Y, z * h.Z))
+                        low = Vector3.new(math.min(low.X, point.X), math.min(low.Y, point.Y), math.min(low.Z, point.Z))
+                        high = Vector3.new(math.max(high.X, point.X), math.max(high.Y, point.Y), math.max(high.Z, point.Z))
+                    end
+                end
+            end
+            count = count + 1
+        end
+    end
+    includePart(source)
+    for _, part in ipairs(source:GetDescendants()) do includePart(part) end
+    assert(count > 0, "Selection must contain at least one BasePart to calculate Terrain bounds")
+    return low, high
+end
+
+local function terrainSettings()
+    local terrain = workspace.Terrain
+    local properties = {}
+    -- Some Terrain editor properties are NotScriptable in some Studio builds;
+    -- missing values remain absent instead of breaking the native backup.
+    local fields = {
+        decoration = "Decoration", grass_length = "GrassLength",
+        water_reflectance = "WaterReflectance", water_transparency = "WaterTransparency",
+        water_wave_size = "WaterWaveSize", water_wave_speed = "WaterWaveSpeed",
+    }
+    for key, field in pairs(fields) do
+        local value = safeProperty(terrain, field)
+        if value ~= nil then properties[key] = value end
+    end
+    local water = safeProperty(terrain, "WaterColor")
+    if typeof(water) == "Color3" then properties.water_color = color3(water) end
+    local materialColors = {}
+    for _, material in ipairs(Enum.Material:GetEnumItems()) do
+        local ok, color = pcall(function() return terrain:GetMaterialColor(material) end)
+        if ok and typeof(color) == "Color3" then
+            materialColors[material.Name] = color3(color)
+        end
+    end
+    properties.material_colors = materialColors
+    return properties
+end
+
+local function terrainRegionsForSelection(source)
+    local minPos, maxPos = selectionBounds(source)
+    local margin = tonumber(marginField.Text)
+    assert(margin and margin >= 0 and margin <= 256, "Terrain margin must be 0 to 256 studs")
+    local mins = {math.floor((minPos.X - margin) / 4),
+                  math.floor((minPos.Y - margin) / 4),
+                  math.floor((minPos.Z - margin) / 4)}
+    local maxs = {math.ceil((maxPos.X + margin) / 4),
+                  math.ceil((maxPos.Y + margin) / 4),
+                  math.ceil((maxPos.Z + margin) / 4)}
+    local counts = {}
+    local tiles = 1
+    for i = 1, 3 do
+        mins[i] = math.max(-32000, math.min(31999, mins[i]))
+        maxs[i] = math.max(mins[i] + 1, math.min(32000, maxs[i]))
+        counts[i] = math.ceil((maxs[i] - mins[i]) / TERRAIN_TILE)
+        tiles = tiles * counts[i]
+    end
+    assert(tiles <= MAX_TERRAIN_TILES,
+        "Terrain selection needs " .. tostring(tiles) .. " tiles (>48). Choose a smaller Model or margin")
+    local regions = {}
+    for x = mins[1], maxs[1] - 1, TERRAIN_TILE do
+        for y = mins[2], maxs[2] - 1, TERRAIN_TILE do
+            for z = mins[3], maxs[3] - 1, TERRAIN_TILE do
+                local origin = {x, y, z}
+                local size = {math.min(TERRAIN_TILE, maxs[1] - x),
+                              math.min(TERRAIN_TILE, maxs[2] - y),
+                              math.min(TERRAIN_TILE, maxs[3] - z)}
+                local region = Region3int16.new(
+                    Vector3int16.new(x, y, z),
+                    Vector3int16.new(x + size[1], y + size[2], z + size[3]))
+                table.insert(regions, {region = region, origin_cells = origin, size_cells = size})
+            end
+        end
+    end
+    return regions
+end
+
+local function sendNative(data, name, kind)
+    local response = request("POST", "/v1/native", buffer.tostring(data),
+        "application/octet-stream", {
+            ["X-REA-Name"] = HttpService:UrlEncode(name),
+            ["X-REA-Kind"] = kind,
+        })
+    return decoded(response)
+end
+
+local function assertHexId(id, label)
+    local clean = id:gsub("%s", "")
+    assert(#clean == 32 and clean:match("^[0-9a-f]+$"), label .. " must contain 32 hex digits")
+    return clean
+end
+
+actionButton("7 · Rescue: native model + Terrain", function()
+    doAction("Capturing full-rescue package", function()
+        local source = selectedMap()
+        local regions = terrainRegionsForSelection(source)
+        local scene = scanMap(source)
+        local sceneResult = decoded(request("POST", "/v1/captures", HttpService:JSONEncode(scene), "application/json"))
+        captureField.Text = sceneResult.capture_id
+        local nativeResult = sendNative(SerializationService:SerializeInstancesAsync({source}), source.Name, "model")
+        nativeField.Text = nativeResult.native_id
+        local chunks = {}
+        for i, tile in ipairs(regions) do
+            setStatus("Backing up Terrain " .. tostring(i) .. "/" .. tostring(#regions))
+            local terrainRegion = workspace.Terrain:CopyRegion(tile.region)
+            local ok, tileData = pcall(function()
+                local encoded = SerializationService:SerializeInstancesAsync({terrainRegion})
+                -- Fail rather than pretending a backup is high-fidelity when the
+                -- current Studio engine cannot deserialize its TerrainRegion.
+                local probe = SerializationService:DeserializeInstancesAsync(encoded)
+                local good = #probe == 1 and probe[1]:IsA("TerrainRegion")
+                if good then
+                    local dims = probe[1].SizeInCells
+                    good = dims.X == tile.size_cells[1] and dims.Y == tile.size_cells[2]
+                        and dims.Z == tile.size_cells[3]
+                end
+                for _, object in ipairs(probe) do object:Destroy() end
+                assert(good, "TerrainRegion roundtrip mismatch")
+                return encoded
+            end)
+            terrainRegion:Destroy()
+            assert(ok, "Studio could not serialize TerrainRegion tile " .. tostring(i) .. ": " .. tostring(tileData))
+            local tileInfo = sendNative(tileData, source.Name .. " terrain tile " .. tostring(i), "terrain")
+            table.insert(chunks, {
+                native_id = tileInfo.native_id,
+                origin_cells = tile.origin_cells,
+                size_cells = tile.size_cells,
+            })
+        end
+        local manifest = {
+            name = source.Name,
+            capture_id = sceneResult.capture_id,
+            native_id = nativeResult.native_id,
+            terrain_chunks = chunks,
+            terrain_settings = terrainSettings(),
+        }
+        local package = decoded(request("POST", "/v1/packages",
+            HttpService:JSONEncode(manifest), "application/json"))
+        packageField.Text = package.package_id
+        setStatus("Rescue saved! " .. tostring(#chunks) .. " Terrain tiles. Package: " .. package.package_id)
+    end)
+end)
+
+local function readPackage()
+    local id = assertHexId(packageField.Text, "Rescue Package ID")
+    local result = decoded(request("GET", "/v1/packages/" .. id .. "/verify"))
+    assert(result.ok == true, "Rescue verification failed. See local CLI: rea-rbx verify " .. id)
+    local package = decoded(request("GET", "/v1/packages/" .. id))
+    assert(package.schema == "roblox-rea.rescue.v1", "Unknown rescue format")
+    assert(package.package_id == id, "Package ID mismatch")
+    return package
+end
+
+local function deserializeNative(nativeId)
+    local bytes = request("GET", "/v1/native/" .. assertHexId(nativeId, "Native ID")).Body
+    return SerializationService:DeserializeInstancesAsync(buffer.fromstring(bytes))
+end
+
+actionButton("8 · Stage rescue into ServerStorage (safe)", function()
+    doAction("Staging native rescue", function()
+        local package = readPackage()
+        local models = deserializeNative(package.native_id)
+        assert(#models > 0, "Rescue model is empty")
+        local staged = {}
+        local terrainTiles = {}
+        for i, chunk in ipairs(package.terrain_chunks) do
+            setStatus("Loading rescue Terrain " .. tostring(i) .. "/" .. tostring(#package.terrain_chunks))
+            local parsed = deserializeNative(chunk.native_id)
+            assert(#parsed == 1 and parsed[1]:IsA("TerrainRegion"),
+                "Rescue contains unexpected Terrain content at tile " .. tostring(i))
+            table.insert(terrainTiles, parsed[1])
+        end
+        recordChanges("Stage full rescue", function()
+            local destination = importFolder()
+            local stage = Instance.new("Folder")
+            stage.Name = "REA_Rescue_" .. package.package_id
+            stage.Parent = destination
+            local modelFolder = Instance.new("Folder")
+            modelFolder.Name = "Models"
+            modelFolder.Parent = stage
+            local terrainFolder = Instance.new("Folder")
+            terrainFolder.Name = "Terrain_Tiles_Staged_NotApplied"
+            terrainFolder.Parent = stage
+            for _, object in ipairs(models) do object.Parent = modelFolder end
+            for i, region in ipairs(terrainTiles) do
+                region.Name = "Tile_" .. tostring(i)
+                region.Parent = terrainFolder
+            end
+            Selection:Set({stage})
+            table.insert(staged, stage)
+        end)
+        setStatus("Staged native model + " .. tostring(#terrainTiles)
+            .. " Terrain tiles in ServerStorage. World Terrain has NOT been changed.")
+    end)
+end)
+
+actionButton("9 · APPLY Terrain to Workspace (overwrite!)", function()
+    doAction("Applying Terrain with undo recording", function()
+        assert(confirmTerrain.Text == "APPLY TERRAIN", "Type APPLY TERRAIN to allow voxel overwrite")
+        local package = readPackage()
+        assert(#package.terrain_chunks > 0, "Package contains no Terrain tiles")
+        -- Load everything and check metadata BEFORE touching the Workspace.
+        local tileData = {}
+        for i, chunk in ipairs(package.terrain_chunks) do
+            local parsed = deserializeNative(chunk.native_id)
+            assert(#parsed == 1 and parsed[1]:IsA("TerrainRegion"),
+                "Tile " .. tostring(i) .. " is not a TerrainRegion")
+            local region = parsed[1]
+            local size = region.SizeInCells
+            assert(size.X == chunk.size_cells[1] and size.Y == chunk.size_cells[2]
+                   and size.Z == chunk.size_cells[3], "Terrain tile size mismatch " .. tostring(i))
+            table.insert(tileData, {region = region, position = Vector3int16.new(
+                chunk.origin_cells[1], chunk.origin_cells[2], chunk.origin_cells[3])})
+        end
+        local applied = recordChanges("Overwrite Terrain from rescue", function()
+            for i, tile in ipairs(tileData) do
+                setStatus("Pasting Terrain " .. tostring(i) .. "/" .. tostring(#tileData))
+                workspace.Terrain:PasteRegion(tile.region, tile.position, true)
+            end
+            local properties = package.terrain_settings or {}
+            local terrain = workspace.Terrain
+            local mapping = {
+                decoration = "Decoration", grass_length = "GrassLength",
+                water_reflectance = "WaterReflectance", water_transparency = "WaterTransparency",
+                water_wave_size = "WaterWaveSize", water_wave_speed = "WaterWaveSpeed",
+            }
+            for field, property in pairs(mapping) do
+                if properties[field] ~= nil then pcall(function() terrain[property] = properties[field] end) end
+            end
+            if properties.water_color then
+                pcall(function() terrain.WaterColor = Color3.new(table.unpack(properties.water_color)) end)
+            end
+            for material, color in pairs(properties.material_colors or {}) do
+                local item = Enum.Material[material]
+                if item then pcall(function() terrain:SetMaterialColor(item, Color3.new(table.unpack(color))) end) end
+            end
+            return #tileData
+        end)
+        for _, tile in ipairs(tileData) do tile.region:Destroy() end
+        confirmTerrain.Text = ""
+        setStatus("Terrain restored: " .. tostring(applied)
+            .. " tiles. Existing voxels inside the tile bounds were overwritten; Studio Undo is available.")
+    end)
+end)
+
+textLabel("Own/editable Studio projects only. JSON can't restore Mesh/CSG or voxel Terrain exactly. Rescue uses original RBXM and TerrainRegion; preview/stage before explicit Terrain overwrite.", 80, Color3.fromRGB(166, 175, 191))
 root.CanvasSize = UDim2.new(0, 0, 0, 0)
 root.AutomaticCanvasSize = Enum.AutomaticSize.Y
 

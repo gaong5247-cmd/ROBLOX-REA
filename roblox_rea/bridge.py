@@ -67,7 +67,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self._url()
         if path == "/health":
-            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.2.0"})
+            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.3.0"})
             return
         if not self._authorized():
             return
@@ -77,6 +77,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._reply(200, {"items": store.list_captures()})
             elif path == "/v1/native":
                 self._reply(200, {"items": store.list_native()})
+            elif path == "/v1/packages":
+                self._reply(200, {"items": store.list_packages()})
+            elif path.startswith("/v1/packages/"):
+                package_path = path.removeprefix("/v1/packages/")
+                if package_path.endswith("/verify"):
+                    self._reply(200, store.verify_package(package_path.removesuffix("/verify")))
+                else:
+                    self._reply(200, store.read_package(package_path))
             elif path.startswith("/v1/captures/"):
                 rest = path.removeprefix("/v1/captures/")
                 if rest.endswith("/analysis"):
@@ -105,7 +113,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         path = self._url()
         compare_id = path.removeprefix("/v1/compare/") if path.startswith("/v1/compare/") else None
-        if path not in ("/v1/captures", "/v1/native") and compare_id is None:
+        if path not in ("/v1/captures", "/v1/native", "/v1/packages") and compare_id is None:
             self._reply(404, {"error": "Unknown endpoint"})
             return
         cap = MAX_NATIVE_BYTES if path == "/v1/native" else MAX_SCENE_BYTES
@@ -123,12 +131,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": "Incomplete request"})
             return
         try:
-            if path == "/v1/captures" or compare_id is not None:
+            if path in ("/v1/captures", "/v1/packages") or compare_id is not None:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     self._reply(415, {"error": "Expected application/json"})
                     return
                 doc = json.loads(raw.decode("utf-8"))
-                if compare_id is None:
+                if path == "/v1/packages":
+                    result = self.server.store.save_package(doc)
+                elif compare_id is None:
                     result = self.server.store.save_capture(doc)
                 else:
                     # Comparison is read-only: it never stores or modifies the submitted scene.
@@ -137,7 +147,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/octet-stream":
                     self._reply(415, {"error": "Expected application/octet-stream"})
                     return
-                result = self.server.store.save_native(unquote(self.headers.get("X-REA-Name", "Untitled")), raw)
+                result = self.server.store.save_native(unquote(self.headers.get("X-REA-Name", "Untitled")), raw,
+                                                       self.headers.get("X-REA-Kind", "model"))
             self._reply(201 if compare_id is None else 200, result)
         except (FileNotFoundError, IsADirectoryError):
             self._reply(404, {"error": "Capture not found"})

@@ -11,14 +11,16 @@ from .schema import validate_scene
 SUPPORTED = frozenset({
     "Model", "Folder", "Part", "WedgePart", "CornerWedgePart", "TrussPart",
     "Seat", "VehicleSeat", "SpawnLocation", "Decal", "Texture", "SpecialMesh",
-    "Attachment", "MeshPart", "UnionOperation",
+    "Attachment", "MeshPart", "UnionOperation", "PointLight", "SpotLight",
+    "SurfaceLight", "Sound", "SurfaceAppearance",
 })
 PLACEHOLDER_CLASSES = frozenset({"MeshPart", "UnionOperation"})
 GEOMETRY = frozenset({
     "Part", "WedgePart", "CornerWedgePart", "TrussPart", "Seat", "VehicleSeat",
     "SpawnLocation", "MeshPart", "UnionOperation",
 })
-ASSET_KEYS = frozenset({"mesh_id", "texture_id", "texture"})
+ASSET_KEYS = frozenset({"mesh_id", "texture_id", "texture", "sound_id",
+                        "color_map", "metalness_map", "normal_map", "roughness_map"})
 
 
 def audit_reconstruction(scene: dict, limit: int = 50) -> dict[str, Any]:
@@ -54,6 +56,7 @@ def audit_reconstruction(scene: dict, limit: int = 50) -> dict[str, Any]:
     issues += [
         "JSON reconstruction never restores script source, execution or Terrain voxels.",
         "Asset references do not guarantee access to the underlying Roblox assets.",
+        "Studio tags and supported typed attributes are preserved in JSON; unsupported attribute types are skipped.",
         "Use Studio-native RBXM backup/restore for highest available fidelity.",
     ]
     return {

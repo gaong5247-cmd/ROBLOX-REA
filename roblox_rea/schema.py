@@ -10,6 +10,10 @@ MAX_NODES = 15_000
 MAX_SCENE_BYTES = 12 * 1024 * 1024
 MAX_NATIVE_BYTES = 48 * 1024 * 1024
 IDENTIFIER = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+ATTRIBUTE_TYPES = {
+    "Vector2": 2, "Vector3": 3, "Color3": 3, "CFrame": 12,
+    "UDim": 2, "UDim2": 4, "NumberRange": 2, "Rect": 4, "BrickColor": 1,
+}
 
 
 class SceneError(ValueError):
@@ -60,6 +64,34 @@ def _vector(props: dict, name: str, length: int) -> None:
         raise SceneError(f"{name} must contain {length} finite numbers")
 
 
+def _validate_metadata(node: dict, index: int) -> None:
+    tags = node.get("tags", [])
+    if not isinstance(tags, list) or len(tags) > 32 or any(
+        not isinstance(tag, str) or not 1 <= len(tag) <= 80 for tag in tags
+    ) or len(set(tags)) != len(tags):
+        raise SceneError(f"node {index}: invalid tags")
+    attrs = node.get("attributes", {})
+    if not isinstance(attrs, dict) or len(attrs) > 32:
+        raise SceneError(f"node {index}: invalid attributes")
+    for name, value in attrs.items():
+        _string(name, f"node {index} attribute", 100)
+        if isinstance(value, (str, int, float, bool)):
+            _check_data(value, f"attribute {name}")
+        elif isinstance(value, dict) and set(value) == {"t", "v"}:
+            kind, raw = value["t"], value["v"]
+            count = ATTRIBUTE_TYPES.get(kind) if isinstance(kind, str) else None
+            if count is None or not isinstance(raw, list) or len(raw) != count or any(
+                type(n) not in (int, float) or not math.isfinite(n) for n in raw
+            ):
+                raise SceneError(f"node {index}: invalid typed attribute {name}")
+            if kind == "Color3" and any(not 0 <= n <= 1 for n in raw):
+                raise SceneError(f"node {index}: invalid Color3 attribute {name}")
+            if kind == "BrickColor" and (type(raw[0]) is not int or raw[0] < 1 or raw[0] > 10000):
+                raise SceneError(f"node {index}: invalid BrickColor attribute {name}")
+        else:
+            raise SceneError(f"node {index}: unsupported attribute {name}")
+
+
 def validate_scene(scene: object) -> dict:
     """Return a validated scene without interpreting or executing source content."""
     if not isinstance(scene, dict):
@@ -96,6 +128,7 @@ def validate_scene(scene: object) -> dict:
         if not isinstance(props, dict):
             raise SceneError(f"node {index}.properties must be an object")
         _check_data(props, f"node {index}.properties")
+        _validate_metadata(node, index)
         _vector(props, "size", 3)
         _vector(props, "cframe", 12)
         _vector(props, "color", 3)

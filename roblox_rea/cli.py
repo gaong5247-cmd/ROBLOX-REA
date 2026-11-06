@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     bridge.add_argument("--port", type=int, default=DEFAULT_PORT)
     sub.add_parser("list", help="List captured scenes")
     sub.add_parser("native", help="List native RBXM exports")
+    sub.add_parser("packages", help="List high-fidelity rescue bundles")
+    verify = sub.add_parser("verify", help="Check integrity of a rescue bundle")
+    verify.add_argument("package_id")
+    rescue = sub.add_parser("rescue", help="Inspect a rescue bundle manifest")
+    rescue.add_argument("package_id")
     inspect = sub.add_parser("analyze", help="Analyze a scene by capture ID or JSON filename")
     inspect.add_argument("scene")
     inspect.add_argument("--file", action="store_true")
@@ -79,6 +84,14 @@ def main(argv: list[str] | None = None) -> int:
             _pretty(store.list_captures())
         elif args.command == "native":
             _pretty(store.list_native())
+        elif args.command == "packages":
+            _pretty(store.list_packages())
+        elif args.command == "verify":
+            result = store.verify_package(args.package_id)
+            _pretty(result)
+            return 0 if result["ok"] else 2
+        elif args.command == "rescue":
+            _pretty(store.read_package(args.package_id))
         elif args.command == "analyze":
             _pretty(analyze_scene(_scene(store, args.scene, args.file)))
         elif args.command == "compare":
