@@ -46,9 +46,10 @@ def _fingerprint(scene: dict) -> str:
     """Content identity excluding unstable capture timestamps / transient IDs."""
     id_paths = {n["id"]: n.get("path", n["id"]) for n in scene["nodes"]}
     entries = [
-        {"path": n.get("path", n["id"]), "class": n["class"],
+        {"path": n.get("path", n["id"]), "class": n["class"], "name": n["name"],
          "properties": n.get("properties", {}), "attributes": n.get("attributes", {}),
-         "tags": n.get("tags", []), "references": reference_paths(scene, n, id_paths)}
+         "tags": n.get("tags", []), "references": reference_paths(scene, n, id_paths),
+         "external_references": n.get("external_references", [])}
         for n in scene["nodes"]
     ]
     entries.sort(key=lambda n: n["path"])

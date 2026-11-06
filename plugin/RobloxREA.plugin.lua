@@ -1101,7 +1101,7 @@ actionButton("11 · Preview 3D differences (green/yellow/red)", function()
                 ghost.CanTouch = false
                 ghost.CanQuery = false
                 ghost.CastShadow = false
-                ghost.Transparency = 1
+                ghost.Transparency = 0.99 -- 1.0 can suppress highlights in Studio
                 ghost.Locked = true
                 ghost.Size = Vector3.new(table.unpack(props.size))
                 ghost.CFrame = CFrame.new(table.unpack(props.cframe))
@@ -1239,7 +1239,7 @@ actionButton("13 · Doctor: preview repair plan", function()
             .. tostring(plan.counts.blocked) .. " manual reviews, "
             .. tostring(plan.counts.missing) .. " missing nodes (use Hybrid), "
             .. tostring(plan.counts.extra_preserved) .. " extra objects preserved. "
-            .. "Type APPLY REPAIR only after reviewing the changes in the CLI.")
+            .. "Review the plan above before typing APPLY REPAIR.")
     end)
 end)
 

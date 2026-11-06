@@ -83,6 +83,7 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
     modified = sorted(
         k for k in set(a) & set(b)
         if (a[k]["class"] != b[k]["class"]
+            or a[k]["name"] != b[k]["name"]
             or a[k].get("properties", {}) != b[k].get("properties", {})
             or a[k].get("tags", []) != b[k].get("tags", [])
             or a[k].get("attributes", {}) != b[k].get("attributes", {})

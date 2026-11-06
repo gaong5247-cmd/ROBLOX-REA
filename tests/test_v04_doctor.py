@@ -120,6 +120,13 @@ class DoctorTests(unittest.TestCase):
         scene["captured_at"] = 20210101
         self.assertEqual(r1["plan_id"], plan_repairs(self.ref, scene)["plan_id"])
 
+    def test_root_rename_is_detected_and_invalidates_plan(self):
+        scene = copy.deepcopy(self.ref)
+        original = plan_repairs(self.ref, scene)["plan_id"]
+        scene["nodes"][0]["name"] = "Renamed Arena"
+        self.assertNotEqual(original, plan_repairs(self.ref, scene)["plan_id"])
+        self.assertEqual(compare_scenes(self.ref, scene)["counts"]["modified"], 1)
+
     def test_stale_change_changes_plan_id(self):
         scene = copy.deepcopy(self.ref)
         report = plan_repairs(self.ref, scene)
