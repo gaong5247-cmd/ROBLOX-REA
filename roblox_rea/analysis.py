@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any
 
 from .schema import validate_scene
+from .references import reference_paths
 from .spatial import part_bounds
 
 
@@ -75,13 +76,17 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
     validate_scene(after)
     a = _keyed(before)
     b = _keyed(after)
+    before_ids = {n["id"]: n.get("path", n["id"]) for n in before["nodes"]}
+    after_ids = {n["id"]: n.get("path", n["id"]) for n in after["nodes"]}
     added = sorted(set(b) - set(a))
     removed = sorted(set(a) - set(b))
     modified = sorted(
         k for k in set(a) & set(b)
-        if a[k]["class"] != b[k]["class"] or (a[k].get("properties", {}) != b[k].get("properties", {})
+        if (a[k]["class"] != b[k]["class"]
+            or a[k].get("properties", {}) != b[k].get("properties", {})
             or a[k].get("tags", []) != b[k].get("tags", [])
-            or a[k].get("attributes", {}) != b[k].get("attributes", {}))
+            or a[k].get("attributes", {}) != b[k].get("attributes", {})
+            or reference_paths(before, a[k], before_ids) != reference_paths(after, b[k], after_ids))
     )
     changes = []
     for path in modified[:limit]:
@@ -106,6 +111,10 @@ def compare_scenes(before: dict, after: dict, limit: int = 50) -> dict:
         for name, empty in (("tags", []), ("attributes", {})):
             if old.get(name, empty) != new.get(name, empty):
                 differences[name] = {"before": old.get(name, empty), "after": new.get(name, empty)}
+        old_refs = reference_paths(before, old, before_ids)
+        new_refs = reference_paths(after, new, after_ids)
+        if old_refs != new_refs:
+            differences["references"] = {"before": old_refs, "after": new_refs}
         changes.append({"path": path, "changes": differences})
     return {
         "before": before.get("capture_id", before["scene_name"]),

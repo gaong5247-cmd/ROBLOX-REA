@@ -6,12 +6,13 @@ from collections import Counter
 from typing import Any
 
 from .schema import validate_scene
+from .references import REFERENCE_FIELDS
 
 # Keep this list in sync with the Studio plugin's ALLOWED reconstruction list.
 SUPPORTED = frozenset({
     "Model", "Folder", "Part", "WedgePart", "CornerWedgePart", "TrussPart",
     "Seat", "VehicleSeat", "SpawnLocation", "Decal", "Texture", "SpecialMesh",
-    "Attachment", "MeshPart", "UnionOperation", "PointLight", "SpotLight",
+    "Attachment", "MeshPart", "UnionOperation", *REFERENCE_FIELDS, "PointLight", "SpotLight",
     "SurfaceLight", "Sound", "SurfaceAppearance",
 })
 PLACEHOLDER_CLASSES = frozenset({"MeshPart", "UnionOperation"})
@@ -31,10 +32,15 @@ def audit_reconstruction(scene: dict, limit: int = 50) -> dict[str, Any]:
     placeholders = Counter()
     missing_transforms = []
     assets = []
+    linked = 0
+    external = []
     for node in scene["nodes"]:
         kind = node["class"]
         p = node.get("properties", {})
         path = node.get("path", node["id"])
+        linked += len(node.get("references", {}))
+        for field in node.get("external_references", []):
+            external.append({"path": path, "property": field})
         if kind not in SUPPORTED:
             unsupported[kind] += 1
         elif kind in PLACEHOLDER_CLASSES:
@@ -53,6 +59,8 @@ def audit_reconstruction(scene: dict, limit: int = 50) -> dict[str, Any]:
         issues.append("MeshPart/UnionOperation are placeholder Parts in JSON reconstruction; use native RBXM for their original shapes.")
     if missing_transforms:
         issues.append("Some geometry lacks size or transform information in the scan.")
+    if external:
+        issues.append("Some references point outside the captured root; those links are not reconstructed automatically.")
     issues += [
         "JSON reconstruction never restores script source, execution or Terrain voxels.",
         "Asset references do not guarantee access to the underlying Roblox assets.",
@@ -67,6 +75,8 @@ def audit_reconstruction(scene: dict, limit: int = 50) -> dict[str, Any]:
         "placeholder_classes": dict(placeholders.most_common()),
         "missing_geometry_properties": {"count": len(missing_transforms), "paths": missing_transforms[:limit]},
         "asset_references": {"count": len(assets), "items": assets[:limit]},
-        "truncated": len(missing_transforms) > limit or len(assets) > limit,
+        "internal_object_references": linked,
+        "external_object_references": {"count": len(external), "items": external[:limit]},
+        "truncated": len(missing_transforms) > limit or len(assets) > limit or len(external) > limit,
         "limitations": issues,
     }

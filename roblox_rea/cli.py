@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .analysis import analyze_scene, compare_scenes, find_nodes
 from .audit import audit_reconstruction
+from .doctor import plan_repairs
 from .preview import render_svg
 from .spatial import query_nearby
 from .bridge import DEFAULT_PORT, serve
@@ -46,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     diff.add_argument("before")
     diff.add_argument("after")
     diff.add_argument("--files", action="store_true")
+    doctor = sub.add_parser("doctor", help="Propose non-destructive repairs between reference and current captures")
+    doctor.add_argument("reference")
+    doctor.add_argument("current")
+    doctor.add_argument("--files", action="store_true")
+    doctor.add_argument("--limit", type=int, default=100)
     find = sub.add_parser("find", help="Search scene object names, classes and hierarchy paths")
     find.add_argument("scene")
     find.add_argument("query")
@@ -96,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
             _pretty(analyze_scene(_scene(store, args.scene, args.file)))
         elif args.command == "compare":
             _pretty(compare_scenes(_scene(store, args.before, args.files), _scene(store, args.after, args.files)))
+        elif args.command == "doctor":
+            _pretty(plan_repairs(_scene(store, args.reference, args.files),
+                                 _scene(store, args.current, args.files), args.limit))
         elif args.command == "find":
             _pretty(find_nodes(_scene(store, args.scene, args.file), args.query))
         elif args.command == "audit":

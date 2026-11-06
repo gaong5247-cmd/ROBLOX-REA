@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from .analysis import analyze_scene, compare_scenes, find_nodes
 from .audit import audit_reconstruction
+from .doctor import plan_repairs
 from .spatial import query_nearby
 from .storage import CaptureStore
 
@@ -41,6 +42,13 @@ def create_mcp():
     def compare_maps(before_capture_id: str, after_capture_id: str) -> dict:
         """Compare two stored captures and report added, removed and modified objects."""
         return compare_scenes(store.read_capture(before_capture_id), store.read_capture(after_capture_id))
+
+    @mcp.tool()
+    def propose_map_repairs(reference_capture_id: str, current_capture_id: str,
+                            limit: int = 100) -> dict:
+        """Read-only repair proposal: no scripts, Terrain editing or automatic execution."""
+        return plan_repairs(store.read_capture(reference_capture_id),
+                            store.read_capture(current_capture_id), limit)
 
     @mcp.tool()
     def list_native_exports(limit: int = 30) -> list[dict]:

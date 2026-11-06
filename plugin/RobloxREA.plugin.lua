@@ -1,4 +1,4 @@
--- ROBLOX-REA v0.3 | Studio plugin (not a LocalScript or executor script)
+-- ROBLOX-REA v0.4 | Studio plugin (not a LocalScript or executor script)
 -- Purpose: document, back up and reconstruct maps in experiences you own or may edit.
 -- All network calls are local to http://127.0.0.1:8787 and use a private token.
 -- REA-RBX never reads other running Roblox clients or private server contents.
@@ -17,7 +17,7 @@ local MAX_CAPTURE_BYTES = 12 * 1024 * 1024
 local toolbar = plugin:CreateToolbar("ROBLOX-REA")
 local toggle = toolbar:CreateButton("ROBLOX-REA", "Open map scanner and reconstruction tools", "")
 local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 450, 570, 350, 420)
-local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v03", widgetInfo)
+local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v04", widgetInfo)
 widget.Title = "ROBLOX-REA · Map Lab"
 
 local root
@@ -105,7 +105,7 @@ local function actionButton(label, callback)
     end)
 end
 
-textLabel("ROBLOX-REA  ·  v0.3", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
+textLabel("ROBLOX-REA  ·  v0.4", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
 textLabel("Select a Model or Folder in Explorer. Outputs go to your local Python bridge; restored models stay in ServerStorage for review.", 55)
 textLabel("Bridge token (printed by: rea-rbx serve)", 20)
 local tokenField = textInput("Paste the local token", 36, true)
@@ -127,7 +127,12 @@ local marginField = textInput("16", 34)
 marginField.Text = "16"
 textLabel("Terrain apply confirmation (type APPLY TERRAIN)", 20)
 local confirmTerrain = textInput("Leave empty to keep Terrain unchanged", 34)
+textLabel("Repair apply confirmation (type APPLY REPAIR)", 20)
+local confirmRepair = textInput("Leave empty for diagnosis only", 34)
 local status = textLabel("Ready. Select your own Studio map.", 82, Color3.fromRGB(180, 231, 198))
+local planDisplay = textLabel("Doctor review: click 13 to show up to 8 proposed changes. Nothing is applied without typing APPLY REPAIR.", 158, Color3.fromRGB(194, 201, 220))
+planDisplay.Font = Enum.Font.Code
+planDisplay.TextSize = 11
 
 local function setStatus(message, isError)
     status.Text = tostring(message)
@@ -323,13 +328,43 @@ local function getProperties(instance)
     return p
 end
 
+local REFERENCE_FIELDS = {
+    WeldConstraint = {"Part0", "Part1"}, Weld = {"Part0", "Part1"},
+    Motor6D = {"Part0", "Part1"}, ManualWeld = {"Part0", "Part1"},
+    Snap = {"Part0", "Part1"}, NoCollisionConstraint = {"Part0", "Part1"},
+    RigidConstraint = {"Attachment0", "Attachment1"},
+    HingeConstraint = {"Attachment0", "Attachment1"},
+    BallSocketConstraint = {"Attachment0", "Attachment1"},
+    RopeConstraint = {"Attachment0", "Attachment1"},
+    RodConstraint = {"Attachment0", "Attachment1"},
+    SpringConstraint = {"Attachment0", "Attachment1"},
+    PrismaticConstraint = {"Attachment0", "Attachment1"},
+    CylindricalConstraint = {"Attachment0", "Attachment1"},
+    UniversalConstraint = {"Attachment0", "Attachment1"},
+    PlaneConstraint = {"Attachment0", "Attachment1"},
+    TorsionSpringConstraint = {"Attachment0", "Attachment1"},
+    AlignPosition = {"Attachment0", "Attachment1"},
+    AlignOrientation = {"Attachment0", "Attachment1"},
+    Beam = {"Attachment0", "Attachment1"}, Trail = {"Attachment0", "Attachment1"},
+    VectorForce = {"Attachment0"}, Torque = {"Attachment0"},
+    LineForce = {"Attachment0", "Attachment1"},
+    AngularVelocity = {"Attachment0"}, LinearVelocity = {"Attachment0"},
+    ObjectValue = {"Value"},
+}
+
 local function scanMap(source)
     local nodes = {}
+    local idByInstance = {}
+    local pathToInstance = {}
+    local instanceById = {}
     local stack = {{instance = source, parent_id = nil, path = "root"}}
     while #stack > 0 do
         local entry = table.remove(stack)
         assert(#nodes < MAX_NODES, "This capture exceeds the 15,000-node limit")
         local nextId = "n" .. tostring(#nodes + 1)
+        idByInstance[entry.instance] = nextId
+        instanceById[nextId] = entry.instance
+        pathToInstance[entry.path] = entry.instance
         local tags, attrs = metadata(entry.instance)
         local node = {
             id = nextId,
@@ -358,6 +393,28 @@ local function scanMap(source)
             table.insert(stack, childrenWithPaths[i])
         end
     end
+    -- Two-pass capture is required: references may point to nodes that were
+    -- visited later in the depth-first traversal.
+    for _, node in ipairs(nodes) do
+        local instance = instanceById[node.id]
+        local fields = REFERENCE_FIELDS[instance.ClassName]
+        if fields then
+            local links = {}
+            local outside = {}
+            for _, field in ipairs(fields) do
+                local target = safeProperty(instance, field)
+                if typeof(target) == "Instance" then
+                    if idByInstance[target] then
+                        links[field] = idByInstance[target]
+                    else
+                        table.insert(outside, field)
+                    end
+                end
+            end
+            if next(links) then node.references = links end
+            if #outside > 0 then node.external_references = outside end
+        end
+    end
     return {
         schema = "roblox-rea.scene.v1",
         scene_name = source.Name ~= "" and source.Name or "Unnamed",
@@ -365,7 +422,7 @@ local function scanMap(source)
         captured_at = os.time(),
         source = {kind = "studio-selection", place_id = game.PlaceId, root_class = source.ClassName},
         nodes = nodes,
-    }
+    }, pathToInstance
 end
 
 local busy = false
@@ -387,11 +444,11 @@ end
 local function recordChanges(name, callback)
     local recording = ChangeHistoryService:TryBeginRecording("REA_" .. name, "ROBLOX-REA: " .. name)
     assert(recording, "Cannot start Studio undo recording (stop Play mode or finish another action)")
-    local ok, result = pcall(callback)
+    local outcome = table.pack(pcall(callback))
     ChangeHistoryService:FinishRecording(recording,
-        ok and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
-    if not ok then error(result) end
-    return result
+        outcome[1] and Enum.FinishRecordingOperation.Commit or Enum.FinishRecordingOperation.Cancel)
+    if not outcome[1] then error(outcome[2]) end
+    return table.unpack(outcome, 2, outcome.n)
 end
 
 local function importFolder()
@@ -414,6 +471,7 @@ local ALLOWED = {
     PointLight = true, SpotLight = true, SurfaceLight = true,
     Sound = true, SurfaceAppearance = true,
 }
+for className in pairs(REFERENCE_FIELDS) do ALLOWED[className] = true end
 
 local function reconstructNode(node)
     local className = node.class
@@ -500,25 +558,36 @@ local function reconstructNode(node)
     return object, placeholder and ("placeholder for " .. node.class) or nil
 end
 
-local function restoreJson(scene)
+local function buildScene(scene, destination, existingByPath)
     assert(scene.schema == "roblox-rea.scene.v1", "Unsupported scene schema")
     assert(type(scene.nodes) == "table" and #scene.nodes > 0 and #scene.nodes <= MAX_NODES, "Bad node count")
     local objects = {}
-    local warnings = 0
-    for _, node in ipairs(scene.nodes) do
-        local object, warning = reconstructNode(node)
-        if object then objects[node.id] = object end
-        if warning then warnings = warnings + 1 end
-    end
-    local destination = importFolder()
+    local created = {}
     local nodesById = {}
+    local warnings = 0
+    local built = 0
     for _, node in ipairs(scene.nodes) do
+        assert(type(node.id) == "string" and type(node.name) == "string", "Invalid scene node")
         nodesById[node.id] = node
+        local preserved = existingByPath and existingByPath[node.path]
+        if preserved then
+            objects[node.id] = preserved
+            if preserved.ClassName ~= node.class then warnings = warnings + 1 end
+        else
+            local object, warning = reconstructNode(node)
+            if object then
+                objects[node.id] = object
+                created[node.id] = true
+                built = built + 1
+            end
+            if warning or not object then warnings = warnings + 1 end
+        end
     end
+    local rootObject = objects[scene.root_id]
+    assert(rootObject, "Cannot reconstruct root; use a Model/Folder/Part source")
     for _, node in ipairs(scene.nodes) do
         local object = objects[node.id]
-        if object then
-            -- Preserve as much hierarchy as possible without creating unsupported classes.
+        if object and created[node.id] then
             local parent = destination
             local parentId = node.parent_id
             local depth = 0
@@ -527,17 +596,38 @@ local function restoreJson(scene)
                     parent = objects[parentId]
                     break
                 end
-                local parentNode = nodesById[parentId]
-                parentId = parentNode and parentNode.parent_id or nil
+                local ancestor = nodesById[parentId]
+                parentId = ancestor and ancestor.parent_id or nil
                 depth = depth + 1
             end
             object.Parent = parent
         end
     end
-    local rootObject = objects[scene.root_id]
-    assert(rootObject, "Cannot reconstruct the selected root class")
-    Selection:Set({rootObject})
-    return rootObject, warnings
+    -- Resolve only captured, internal links, and only on newly created objects.
+    -- Native objects retain the engine's original references untouched.
+    local linksRestored = 0
+    for _, node in ipairs(scene.nodes) do
+        local object = objects[node.id]
+        if object and created[node.id] then
+            for field, targetId in pairs(node.references or {}) do
+                local target = objects[targetId]
+                local allowed = REFERENCE_FIELDS[node.class]
+                if target and allowed and table.find(allowed, field) then
+                    local ok = pcall(function() object[field] = target end)
+                    if ok then linksRestored = linksRestored + 1 else warnings = warnings + 1 end
+                else
+                    warnings = warnings + 1
+                end
+            end
+        end
+    end
+    return rootObject, warnings, built, linksRestored
+end
+
+local function restoreJson(scene)
+    local object, warnings, built, links = buildScene(scene, importFolder(), nil)
+    Selection:Set({object})
+    return object, warnings, built, links
 end
 
 local function decoded(response)
@@ -891,7 +981,311 @@ actionButton("9 · APPLY Terrain to Workspace (overwrite!)", function()
     end)
 end)
 
-textLabel("Own/editable Studio projects only. JSON can't restore Mesh/CSG or voxel Terrain exactly. Rescue uses original RBXM and TerrainRegion; preview/stage before explicit Terrain overwrite.", 80, Color3.fromRGB(166, 175, 191))
+-- v0.4: High-fidelity native-first hybrid restoration. Never places imported
+-- objects into the live Workspace or overwrites Terrain automatically.
+actionButton("10 · HYBRID: native + JSON fallback (stage)", function()
+    doAction("Staging hybrid reconstruction", function()
+        local captureId, nativeId
+        local packageText = packageField.Text:gsub("%s", "")
+        if #packageText > 0 then
+            local packageId = assertHexId(packageText, "Package ID")
+            local package = decoded(request("GET", "/v1/packages/" .. packageId))
+            assert(package.package_id == packageId and package.schema == "roblox-rea.rescue.v1", "Invalid package")
+            captureId, nativeId = package.capture_id, package.native_id
+        else
+            captureId = assertHexId(captureField.Text, "Capture ID")
+            nativeId = assertHexId(nativeField.Text, "Native ID")
+        end
+        local scene = decoded(request("GET", "/v1/captures/" .. captureId))
+        assert(scene.schema == "roblox-rea.scene.v1", "Unsupported scene schema")
+        local nativeOk, nativeModels = pcall(deserializeNative, nativeId)
+        local nativeRoot = nil
+        if nativeOk and #nativeModels == 1 and nativeModels[1].ClassName == scene.nodes[1].class then
+            nativeRoot = nativeModels[1]
+        else
+            if nativeOk then
+                for _, model in ipairs(nativeModels) do model:Destroy() end
+            end
+        end
+        local rootObject, warnings, built, links = recordChanges("Hybrid rescue stage", function()
+            local stage = Instance.new("Folder")
+            stage.Name = "REA_Hybrid_" .. captureId
+            stage.Parent = importFolder()
+            local indexed = nil
+            if nativeRoot then
+                nativeRoot.Parent = stage
+                local _, paths = scanMap(nativeRoot)
+                indexed = paths
+            end
+            local root, warnCount, createdCount, linkCount = buildScene(scene, stage, indexed)
+            Selection:Set({root})
+            return root, warnCount, createdCount, linkCount
+        end)
+        captureField.Text = captureId
+        nativeField.Text = nativeId
+        setStatus("Hybrid staged in ServerStorage: " .. rootObject.Name
+            .. " | native: " .. tostring(nativeRoot ~= nil)
+            .. " | JSON nodes recovered: " .. tostring(built)
+            .. " | links: " .. tostring(links) .. " | warnings: " .. tostring(warnings))
+    end)
+end)
+
+-- Studio-only visual diagnostics. Preview objects are non-archivable and may
+-- be deleted with one button; no source object is recolored or moved.
+local previewFolder = nil
+local MAX_DIFF_MARKERS = 60
+local function clearDiffMarkers()
+    if previewFolder then
+        previewFolder:Destroy()
+        previewFolder = nil
+    end
+end
+
+local function diffHighlight(parent, adornee, shade)
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "REA_DiffMarker"
+    highlight.Archivable = false
+    highlight.FillColor = shade
+    highlight.OutlineColor = shade
+    highlight.FillTransparency = 0.8
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Adornee = adornee
+    highlight.Parent = parent
+end
+
+actionButton("11 · Preview 3D differences (green/yellow/red)", function()
+    doAction("Building 3D difference preview", function()
+        local captureId = assertHexId(captureField.Text, "Capture ID")
+        local source = selectedMap()
+        local current, pathIndex = scanMap(source)
+        local baseline = decoded(request("GET", "/v1/captures/" .. captureId))
+        local report = decoded(request("POST", "/v1/compare/" .. captureId,
+            HttpService:JSONEncode(current), "application/json"))
+        clearDiffMarkers()
+        previewFolder = Instance.new("Folder")
+        previewFolder.Name = "__REA_DiffPreview_" .. captureId:sub(1, 8)
+        previewFolder.Archivable = false
+        previewFolder.Parent = workspace
+        local marked = 0
+        local colors = {
+            added = Color3.fromRGB(40, 250, 145),
+            modified = Color3.fromRGB(245, 207, 54),
+            removed = Color3.fromRGB(245, 67, 73),
+        }
+        local function mark(path, shade)
+            if marked >= MAX_DIFF_MARKERS then return end
+            local target = pathIndex[path]
+            while target and not (target:IsA("BasePart") or target:IsA("Model")) do
+                if target == source then break end
+                target = target.Parent
+            end
+            if target and (target:IsA("BasePart") or target:IsA("Model")) then
+                diffHighlight(previewFolder, target, shade)
+                marked = marked + 1
+            end
+        end
+        for _, path in ipairs(report.added or {}) do mark(path, colors.added) end
+        for _, path in ipairs(report.modified or {}) do mark(path, colors.modified) end
+        local nodes = {}
+        for _, node in ipairs(baseline.nodes or {}) do nodes[node.path] = node end
+        for _, path in ipairs(report.removed or {}) do
+            if marked >= MAX_DIFF_MARKERS then break end
+            local props = nodes[path] and nodes[path].properties or {}
+            if type(props.size) == "table" and type(props.cframe) == "table" then
+                local ghost = Instance.new("Part")
+                ghost.Name = "REA_Missing_Ghost"
+                ghost.Archivable = false
+                ghost.Anchored = true
+                ghost.CanCollide = false
+                ghost.CanTouch = false
+                ghost.CanQuery = false
+                ghost.CastShadow = false
+                ghost.Transparency = 1
+                ghost.Locked = true
+                ghost.Size = Vector3.new(table.unpack(props.size))
+                ghost.CFrame = CFrame.new(table.unpack(props.cframe))
+                ghost.Parent = previewFolder
+                diffHighlight(previewFolder, ghost, colors.removed)
+                marked = marked + 1
+            end
+        end
+        local counts = report.counts
+        setStatus("3D diff: +" .. tostring(counts.added) .. " / -" .. tostring(counts.removed)
+            .. " / ~" .. tostring(counts.modified)
+            .. ". Green added, yellow changed, red missing. " .. tostring(marked)
+            .. " markers (max " .. tostring(MAX_DIFF_MARKERS) .. "). Use Clear to remove.")
+    end)
+end)
+
+actionButton("12 · Clear 3D diff overlay", function()
+    doAction("Clearing 3D diff markers", function()
+        clearDiffMarkers()
+        setStatus("3D diff overlay cleared; source parts unchanged")
+    end)
+end)
+
+local currentRepair = nil
+local function showRepairPlan(plan)
+    local lines = {"REPAIR PLAN " .. plan.plan_id:sub(1, 12) .. " (preview only)"}
+    local shown = math.min(#plan.operations, 8)
+    for i = 1, shown do
+        local operation = plan.operations[i]
+        local detail = operation.op == "set_reference"
+            and ("LINK " .. operation.property .. " -> " .. operation.target_path)
+            or ("SET " .. operation.property .. " = " .. HttpService:JSONEncode(operation.value))
+        table.insert(lines, tostring(i) .. ". " .. operation.path:sub(1, 80))
+        table.insert(lines, "   " .. detail:sub(1, 90))
+    end
+    if #plan.operations > shown then
+        table.insert(lines, "+ " .. tostring(#plan.operations - shown) .. " more actions. Export scans for CLI review.")
+    end
+    if #plan.operations == 0 then table.insert(lines, "No safe edits proposed.") end
+    if plan.counts.blocked > 0 then
+        table.insert(lines, tostring(plan.counts.blocked) .. " changes require manual review.")
+    end
+    planDisplay.Text = table.concat(lines, "\n")
+    planDisplay.Size = UDim2.new(1, 0, 0, math.max(138, math.min(390, #lines * 16 + 8)))
+end
+local function calculateRepair(captureId, map)
+    local scan = scanMap(map)
+    return decoded(request("POST", "/v1/repair/" .. captureId,
+        HttpService:JSONEncode(scan), "application/json"))
+end
+
+-- Only typed, allowlisted properties can be written. Any failure cancels the
+-- complete ChangeHistoryService transaction instead of reporting success.
+local PART_KEY_MAP = {
+    size = "Size", cframe = "CFrame", color = "Color", material = "Material",
+    transparency = "Transparency", reflectance = "Reflectance",
+    anchored = "Anchored", can_collide = "CanCollide", can_touch = "CanTouch",
+    can_query = "CanQuery", cast_shadow = "CastShadow", shape = "Shape",
+}
+local OTHER_KEY_MAP = {
+    texture = "Texture", face = "Face", studs_per_tile_u = "StudsPerTileU",
+    studs_per_tile_v = "StudsPerTileV", local_cframe = "CFrame", visible = "Visible",
+    mesh_id = "MeshId", texture_id = "TextureId", mesh_type = "MeshType",
+    scale = "Scale", offset = "Offset", brightness = "Brightness",
+    enabled = "Enabled", shadows = "Shadows", range = "Range", angle = "Angle",
+    sound_id = "SoundId", volume = "Volume", playback_speed = "PlaybackSpeed",
+    looped = "Looped", rolloff_max_distance = "RollOffMaxDistance",
+    rolloff_min_distance = "RollOffMinDistance", color_map = "ColorMap",
+    metalness_map = "MetalnessMap", normal_map = "NormalMap",
+    roughness_map = "RoughnessMap", transparency = "Transparency", color = "Color3",
+}
+local function applyPlannedProperty(object, key, value)
+    local prop = object:IsA("BasePart") and PART_KEY_MAP[key] or OTHER_KEY_MAP[key]
+    if object:IsA("Light") and key == "color" then prop = "Color" end
+    assert(prop, "Repair property is not allowlisted: " .. tostring(key))
+    -- Deny cross-class writes even if both classes have a property with the
+    -- same name (e.g. a Sound cannot receive attachment properties).
+    if object:IsA("BasePart") then
+        assert(key ~= "shape" or object:IsA("Part"), "Shape only applies to Part")
+    elseif object:IsA("Decal") or object:IsA("Texture") then
+        assert(table.find({"texture", "transparency", "face", "color", "studs_per_tile_u", "studs_per_tile_v"}, key))
+        assert(key ~= "studs_per_tile_u" and key ~= "studs_per_tile_v" or object:IsA("Texture"))
+    elseif object:IsA("Attachment") then
+        assert(table.find({"local_cframe", "visible"}, key))
+    elseif object:IsA("SpecialMesh") then
+        assert(table.find({"mesh_id", "texture_id", "mesh_type", "scale", "offset"}, key))
+    elseif object:IsA("Light") then
+        assert(table.find({"brightness", "color", "enabled", "shadows", "range", "angle", "face"}, key))
+    elseif object:IsA("Sound") then
+        assert(table.find({"sound_id", "volume", "playback_speed", "looped", "rolloff_max_distance", "rolloff_min_distance"}, key))
+    elseif object:IsA("SurfaceAppearance") then
+        assert(table.find({"color_map", "metalness_map", "normal_map", "roughness_map"}, key))
+    else
+        error("Repair is not allowed for class " .. object.ClassName)
+    end
+    if key == "cframe" or key == "local_cframe" then
+        value = CFrame.new(table.unpack(value))
+    elseif key == "size" or key == "scale" or key == "offset" then
+        value = Vector3.new(table.unpack(value))
+    elseif key == "color" then
+        value = Color3.new(table.unpack(value))
+    elseif key == "material" then
+        value = assert(Enum.Material[value], "Unknown material " .. tostring(value))
+    elseif key == "shape" then
+        value = assert(Enum.PartType[value], "Unknown part shape")
+    elseif key == "face" then
+        value = assert(Enum.NormalId[value], "Unknown face")
+    elseif key == "mesh_type" then
+        value = assert(Enum.MeshType[value], "Unknown mesh type")
+    end
+    object[prop] = value
+end
+
+local function applyPlannedLink(object, field, target)
+    local fields = REFERENCE_FIELDS[object.ClassName]
+    assert(fields and table.find(fields, field), "Reference type is not allowlisted")
+    assert(typeof(target) == "Instance", "Reference target is missing")
+    if field == "Part0" or field == "Part1" then
+        assert(target:IsA("BasePart"), "Reference target must be a BasePart")
+    elseif field == "Attachment0" or field == "Attachment1" then
+        assert(target:IsA("Attachment"), "Reference target must be Attachment")
+    end
+    object[field] = target
+end
+
+actionButton("13 · Doctor: preview repair plan", function()
+    doAction("Generating read-only repair plan", function()
+        local captureId = assertHexId(captureField.Text, "Capture ID")
+        local source = selectedMap()
+        local plan = calculateRepair(captureId, source)
+        assert(plan.schema == "roblox-rea.repair-plan.v1" and #plan.plan_id == 64, "Invalid doctor plan")
+        currentRepair = {id = plan.plan_id, capture_id = captureId, selection = source}
+        showRepairPlan(plan)
+        setStatus("Doctor preview: " .. tostring(plan.counts.planned) .. " safe actions, "
+            .. tostring(plan.counts.blocked) .. " manual reviews, "
+            .. tostring(plan.counts.missing) .. " missing nodes (use Hybrid), "
+            .. tostring(plan.counts.extra_preserved) .. " extra objects preserved. "
+            .. "Type APPLY REPAIR only after reviewing the changes in the CLI.")
+    end)
+end)
+
+actionButton("14 · APPLY approved property/link repair", function()
+    doAction("Applying approved repair plan", function()
+        assert(confirmRepair.Text == "APPLY REPAIR", "Type APPLY REPAIR to approve a bounded edit")
+        local source = selectedMap()
+        local captureId = assertHexId(captureField.Text, "Capture ID")
+        assert(currentRepair and currentRepair.selection == source and currentRepair.capture_id == captureId,
+            "Preview this exact selection and capture first")
+        -- Recompute on a fresh scan; stale or changed selections cannot use a
+        -- previously approved plan from another source state.
+        local plan = calculateRepair(captureId, source)
+        assert(plan.plan_id == currentRepair.id, "Map changed after preview: regenerate repair plan")
+        assert(#plan.operations > 0 and #plan.operations <= 100, "No safe repairs in this plan")
+        local _, byPath = scanMap(source)
+        local completed = recordChanges("Approved map repair", function()
+            for _, operation in ipairs(plan.operations) do
+                local target = byPath[operation.path]
+                assert(target and target.ClassName == operation.class, "Repair target changed")
+                if operation.op == "set_property" then
+                    applyPlannedProperty(target, operation.property, operation.value)
+                elseif operation.op == "set_reference" then
+                    local referenced = byPath[operation.target_path]
+                    applyPlannedLink(target, operation.property, referenced)
+                else
+                    error("Unexpected repair operation")
+                end
+            end
+            return #plan.operations
+        end)
+        currentRepair = nil
+        confirmRepair.Text = ""
+        planDisplay.Text = "Repair applied. Preview again to inspect remaining differences."
+        local remaining = calculateRepair(captureId, source)
+        setStatus("Repaired " .. tostring(completed) .. " properties/links with Studio Undo. "
+            .. tostring(remaining.counts.planned) .. " safe actions remain; "
+            .. tostring(remaining.counts.blocked) .. " require manual review.")
+    end)
+end)
+
+plugin.Unloading:Connect(function()
+    clearDiffMarkers()
+end)
+
+textLabel("Own/editable Studio projects only. Hybrid preserves native shapes and supplements supported JSON nodes. Doctor never guesses protected assets, scripts or Terrain. Preview before applying any repair.", 80, Color3.fromRGB(166, 175, 191))
 root.CanvasSize = UDim2.new(0, 0, 0, 0)
 root.AutomaticCanvasSize = Enum.AutomaticSize.Y
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — PHOENIX: Hybrid Reconstruction + Relationship Doctor
+
+- Capture allowlisted instance references (Weld, Motor6D, Attachment, selected constraints, ObjectValue) using two-pass intra-selection IDs; flag external links rather than inventing targets.
+- Restore missing supported JSON nodes over a native RBXM root while keeping native MeshPart/CSG geometry, in **ServerStorage staging only**. If native model cannot be deserialized, fall back to explicit approximate JSON with warnings.
+- Overlay Studio 3D differences with temporary highlights (green added/yellow changed/red missing bounding ghosts), capped at 60 and cleared on plugin unload.
+- Add deterministic, read-only Reconstruction Doctor with constrained property/link operations and manual-review blockers; CLI, local HTTP route and MCP tool.
+- Apply only after typing `APPLY REPAIR` and rechecking a fresh `plan_id`, inside Studio Undo recording. No automatic deletion, script execution or Terrain edits.
+- Add Python tests for relation integrity, stable reference paths, stale plans, unauthorized HTTP calls and CLI.
+- **Python verified; Studio plugin not yet manually tested in Roblox Studio.**
+
+
 ## 0.3.0 — High-fidelity Rescue: Terrain and engine-native assets
 
 - Add `roblox-rea.rescue.v1` manifests linking authorized JSON scans, native model RBXM and TerrainRegion RBXM tiles.

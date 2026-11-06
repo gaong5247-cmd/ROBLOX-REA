@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import re
 
+from .references import REFERENCE_FIELDS, link_target_valid
+
 SCHEMA = "roblox-rea.scene.v1"
 MAX_NODES = 15_000
 MAX_SCENE_BYTES = 12 * 1024 * 1024
@@ -106,6 +108,7 @@ def validate_scene(scene: object) -> dict:
     if not isinstance(nodes, list) or not 1 <= len(nodes) <= MAX_NODES:
         raise SceneError(f"nodes must contain between 1 and {MAX_NODES} items")
     parents: dict[str, str | None] = {}
+    node_classes: dict[str, str] = {}
     paths: set[str] = set()
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
@@ -117,6 +120,7 @@ def validate_scene(scene: object) -> dict:
         if parent is not None and (not isinstance(parent, str) or not IDENTIFIER.fullmatch(parent)):
             raise SceneError(f"node {index}: invalid parent_id")
         parents[key] = parent
+        node_classes[key] = node.get("class")
         _string(node.get("name"), f"node {index}.name", 200)
         _string(node.get("class"), f"node {index}.class", 80)
         if "path" in node:
@@ -129,6 +133,19 @@ def validate_scene(scene: object) -> dict:
             raise SceneError(f"node {index}.properties must be an object")
         _check_data(props, f"node {index}.properties")
         _validate_metadata(node, index)
+        references = node.get("references", {})
+        if not isinstance(references, dict) or len(references) > 2:
+            raise SceneError(f"node {index}: invalid reference map")
+        allowed_fields = REFERENCE_FIELDS.get(node["class"], ())
+        external_fields = node.get("external_references", [])
+        if (not isinstance(external_fields, list) or len(external_fields) > 2
+                or len(set(external_fields)) != len(external_fields)
+                or any(field not in allowed_fields for field in external_fields)
+                or set(external_fields) & set(references)):
+            raise SceneError(f"node {index}: invalid external references")
+        for field, target in references.items():
+            if field not in allowed_fields or not isinstance(target, str) or not IDENTIFIER.fullmatch(target):
+                raise SceneError(f"node {index}: disallowed reference {field}")
         _vector(props, "size", 3)
         _vector(props, "cframe", 12)
         _vector(props, "color", 3)
@@ -143,6 +160,12 @@ def validate_scene(scene: object) -> dict:
         if "color" in props and any(not 0 <= n <= 1 for n in props["color"]):
             raise SceneError("color components must be between 0 and 1")
 
+    for node in nodes:
+        for field, target in node.get("references", {}).items():
+            if target not in node_classes:
+                raise SceneError(f"node {node['id']}: dangling reference {field}")
+            if not link_target_valid(field, node_classes[target]):
+                raise SceneError(f"node {node['id']}: incompatible reference {field}")
     if root not in parents or parents[root] is not None:
         raise SceneError("root_id must refer to a root node")
     if sum(parent is None for parent in parents.values()) != 1:
