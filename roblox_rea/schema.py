@@ -74,6 +74,7 @@ def validate_scene(scene: object) -> dict:
     if not isinstance(nodes, list) or not 1 <= len(nodes) <= MAX_NODES:
         raise SceneError(f"nodes must contain between 1 and {MAX_NODES} items")
     parents: dict[str, str | None] = {}
+    paths: set[str] = set()
     for index, node in enumerate(nodes):
         if not isinstance(node, dict):
             raise SceneError(f"node {index} must be an object")
@@ -87,7 +88,10 @@ def validate_scene(scene: object) -> dict:
         _string(node.get("name"), f"node {index}.name", 200)
         _string(node.get("class"), f"node {index}.class", 80)
         if "path" in node:
-            _string(node["path"], f"node {index}.path", 2048)
+            path = _string(node["path"], f"node {index}.path", 2048)
+            if path in paths:
+                raise SceneError(f"node {index}: duplicate hierarchy path")
+            paths.add(path)
         props = node.get("properties", {})
         if not isinstance(props, dict):
             raise SceneError(f"node {index}.properties must be an object")

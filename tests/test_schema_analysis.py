@@ -50,6 +50,12 @@ class SceneTests(unittest.TestCase):
         with self.assertRaises(SceneError):
             validate_scene(bad)
 
+    def test_duplicate_path(self):
+        bad = copy.deepcopy(self.scene)
+        bad["nodes"][2]["path"] = bad["nodes"][1]["path"]
+        with self.assertRaises(SceneError):
+            validate_scene(bad)
+
     def test_duplicate_id(self):
         bad = copy.deepcopy(self.scene)
         bad["nodes"][2]["id"] = "n2"

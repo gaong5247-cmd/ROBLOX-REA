@@ -16,16 +16,22 @@ local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, fals
 local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v01", widgetInfo)
 widget.Title = "ROBLOX-REA · Map Lab"
 
+local root
+local displayOrder = 0
 local function newGui(className, props, parent)
     local instance = Instance.new(className)
     for key, value in pairs(props or {}) do
         instance[key] = value
     end
+    if root and parent == root and instance:IsA("GuiObject") then
+        displayOrder = displayOrder + 1
+        instance.LayoutOrder = displayOrder
+    end
     instance.Parent = parent
     return instance
 end
 
-local root = newGui("ScrollingFrame", {
+root = newGui("ScrollingFrame", {
     Size = UDim2.fromScale(1, 1),
     ScrollBarThickness = 6,
     CanvasSize = UDim2.new(0, 0, 0, 780),
@@ -393,7 +399,7 @@ actionButton("2 · Native backup → RBXM", function()
     end)
 end)
 
-actionButton("3 · Restore native RBXM (exact)", function()
+actionButton("3 · Restore native RBXM (Studio)", function()
     doAction("Loading native RBXM", function()
         local nativeId = nativeField.Text:gsub("%s", "")
         assert(nativeId:match("^[0-9a-f]+$") and #nativeId == 32, "Enter a 32-character native ID")
