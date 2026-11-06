@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roblox-rea"
+version = "0.1.0"
+description = "Roblox Studio scene capture, faithful native model backup, analysis and read-only MCP tools"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "ROBLOX-REA contributors"}]
+dependencies = []
+keywords = ["roblox", "studio", "mcp", "scene-analysis", "reverse-engineering"]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.28,<2"]
+
+[project.scripts]
+rea-rbx = "roblox_rea.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["roblox_rea*"]
