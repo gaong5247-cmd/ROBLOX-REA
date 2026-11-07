@@ -10,6 +10,8 @@ from pathlib import Path
 from .analysis import analyze_scene, compare_scenes, find_nodes
 from .audit import audit_reconstruction
 from .doctor import plan_repairs
+from .fidelity import assess_fidelity
+from .script_inventory import summarize_script_inventory, compare_script_inventories
 from .preview import render_svg
 from .spatial import query_nearby
 from .bridge import DEFAULT_PORT, serve
@@ -36,6 +38,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="List captured scenes")
     sub.add_parser("native", help="List native RBXM exports")
     sub.add_parser("packages", help="List high-fidelity rescue bundles")
+    sub.add_parser("scripts", help="List Studio script inventories (metadata only)")
+    inv = sub.add_parser("script-inventory", help="Inspect a Studio script inventory (no code)")
+    inv.add_argument("inventory_id")
+    inv.add_argument("--details", action="store_true", help="Include script names and positions (no source)")
+    scriptdiff = sub.add_parser("script-compare", help="Compare two script metadata inventories")
+    scriptdiff.add_argument("before")
+    scriptdiff.add_argument("after")
     verify = sub.add_parser("verify", help="Check integrity of a rescue bundle")
     verify.add_argument("package_id")
     rescue = sub.add_parser("rescue", help="Inspect a rescue bundle manifest")
@@ -47,6 +56,13 @@ def main(argv: list[str] | None = None) -> int:
     diff.add_argument("before")
     diff.add_argument("after")
     diff.add_argument("--files", action="store_true")
+    fidelity = sub.add_parser("fidelity", help="Measure observable map reconstruction fidelity (metadata only)")
+    fidelity.add_argument("reference")
+    fidelity.add_argument("restored")
+    fidelity.add_argument("--files", action="store_true")
+    fidelity.add_argument("--position-tolerance", type=float, default=0.05)
+    fidelity.add_argument("--rotation-tolerance", type=float, default=0.1)
+    fidelity.add_argument("--size-tolerance", type=float, default=0.05)
     doctor = sub.add_parser("doctor", help="Propose non-destructive repairs between reference and current captures")
     doctor.add_argument("reference")
     doctor.add_argument("current")
@@ -92,6 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             _pretty(store.list_native())
         elif args.command == "packages":
             _pretty(store.list_packages())
+        elif args.command == "scripts":
+            _pretty(store.list_script_inventories())
+        elif args.command == "script-inventory":
+            inventory = store.read_script_inventory(args.inventory_id)
+            _pretty(inventory if args.details else summarize_script_inventory(inventory))
+        elif args.command == "script-compare":
+            _pretty(compare_script_inventories(store.read_script_inventory(args.before),
+                                               store.read_script_inventory(args.after)))
         elif args.command == "verify":
             result = store.verify_package(args.package_id)
             _pretty(result)
@@ -102,6 +126,12 @@ def main(argv: list[str] | None = None) -> int:
             _pretty(analyze_scene(_scene(store, args.scene, args.file)))
         elif args.command == "compare":
             _pretty(compare_scenes(_scene(store, args.before, args.files), _scene(store, args.after, args.files)))
+        elif args.command == "fidelity":
+            _pretty(assess_fidelity(_scene(store, args.reference, args.files),
+                                    _scene(store, args.restored, args.files),
+                                    position_tolerance=args.position_tolerance,
+                                    rotation_tolerance=args.rotation_tolerance,
+                                    size_tolerance=args.size_tolerance))
         elif args.command == "doctor":
             _pretty(plan_repairs(_scene(store, args.reference, args.files),
                                  _scene(store, args.current, args.files), args.limit))

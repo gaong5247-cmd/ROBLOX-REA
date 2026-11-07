@@ -1,3 +1,13 @@
+## 0.5.0 — FIDELITY: observable reconstruction accuracy + script inventory
+
+- Add `roblox_rea/fidelity.py` to compare restored vs original scene JSON with field-level tolerance metrics, 3D position/rotation/size drift, internal-reference path normalization, and hierarchy-node coverage. The metric is explicitly **not** a mesh/terrain/script-body accuracy certification.
+- Add read-only `POST /v1/fidelity/{capture_id}`, CLI `rea-rbx fidelity` and MCP `verify_reconstruction`.
+- Add Studio button **15 · VERIFY map fidelity** for selected Workspace source or staged root in `ServerStorage.REA_Imports`.
+- Add metadata-only, service-scoped Script/LocalScript/ModuleScript inventory with explicit refusal of source/bytecode fields, ≤8,000 entries / 1 MiB, authenticated `POST/GET /v1/scripts`, CLI and read-only MCP operations.
+- Add Studio button **16 · Inventory server/client scripts (NO source)** and JSON-level Enabled/RunContext capture for scripts in selected models; fix `safeProperty` so `false` is not accidentally treated as nil.
+- Document the v1.0 path for explicitly approved Studio-only edit-time source backup and safe restore, **not implemented** in v0.5.
+- Add Python/integration/security tests for accuracy, metadata validation, local authentication and CLI. **Studio runtime testing is still outstanding.**
+
 # Changelog
 
 ## 0.4.0 — PHOENIX: Hybrid Reconstruction + Relationship Doctor

@@ -1,0 +1,34 @@
+{
+  "schema": "roblox-rea.script-inventory.v1",
+  "scope": "authorized-studio-project",
+  "mode": "metadata-only",
+  "includes_source": false,
+  "place_id": 0,
+  "captured_at": 1793980000,
+  "items": [
+    {
+      "path": "ServerScriptService/Script:ServerMain[1]",
+      "name": "ServerMain",
+      "class": "Script",
+      "service": "ServerScriptService",
+      "enabled": true,
+      "run_context": "Server",
+      "archivable": true
+    },
+    {
+      "path": "StarterPlayer/StarterPlayerScripts:StarterPlayerScripts[1]/LocalScript:ClientMain[1]",
+      "name": "ClientMain",
+      "class": "LocalScript",
+      "service": "StarterPlayer",
+      "enabled": false,
+      "archivable": true
+    },
+    {
+      "path": "ReplicatedStorage/ModuleScript:Shared[1]",
+      "name": "Shared",
+      "class": "ModuleScript",
+      "service": "ReplicatedStorage",
+      "archivable": true
+    }
+  ]
+}

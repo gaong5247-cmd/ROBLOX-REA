@@ -1,4 +1,4 @@
--- ROBLOX-REA v0.4 | Studio plugin (not a LocalScript or executor script)
+-- ROBLOX-REA v0.5 | Studio plugin (not a LocalScript or executor script)
 -- Purpose: document, back up and reconstruct maps in experiences you own or may edit.
 -- All network calls are local to http://127.0.0.1:8787 and use a private token.
 -- REA-RBX never reads other running Roblox clients or private server contents.
@@ -8,6 +8,7 @@ local Selection = game:GetService("Selection")
 local ServerStorage = game:GetService("ServerStorage")
 local SerializationService = game:GetService("SerializationService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local RunService = game:GetService("RunService")
 
 local API = "http://127.0.0.1:8787"
 local MAX_NODES = 15000
@@ -18,7 +19,7 @@ local toolbar = plugin:CreateToolbar("ROBLOX-REA")
 local toggle = toolbar:CreateButton("ROBLOX-REA", "Open map scanner and reconstruction tools", "")
 local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Float, false, false, 450, 570, 350, 420)
 local widget = plugin:CreateDockWidgetPluginGui("ROBLOX_REA_v04", widgetInfo)
-widget.Title = "ROBLOX-REA · Map Lab"
+widget.Title = "ROBLOX-REA · Fidelity Lab"
 
 local root
 local displayOrder = 0
@@ -105,7 +106,7 @@ local function actionButton(label, callback)
     end)
 end
 
-textLabel("ROBLOX-REA  ·  v0.4", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
+textLabel("ROBLOX-REA  ·  v0.5", 27, Color3.fromRGB(109, 173, 255)).TextSize = 19
 textLabel("Select a Model or Folder in Explorer. Outputs go to your local Python bridge; restored models stay in ServerStorage for review.", 55)
 textLabel("Bridge token (printed by: rea-rbx serve)", 20)
 local tokenField = textInput("Paste the local token", 36, true)
@@ -118,6 +119,8 @@ tokenField.FocusLost:Connect(function()
 end)
 textLabel("Capture ID (from JSON scan)", 20)
 local captureField = textInput("Capture ID appears after scan", 36)
+textLabel("Script inventory ID (metadata only)", 20)
+local scriptField = textInput("Inventory ID appears after script scan", 36)
 textLabel("Native model ID (from RBXM backup)", 20)
 local nativeField = textInput("Native ID appears after backup", 36)
 textLabel("Rescue Package ID (full native + optional Terrain)", 20)
@@ -192,7 +195,8 @@ local function safeProperty(instance, name)
     local ok, value = pcall(function()
         return instance[name]
     end)
-    return ok and value or nil
+    if ok then return value end -- preserves valid `false` values (e.g. disabled scripts)
+    return nil
 end
 
 -- Only primitive and explicitly typed Roblox Attribute values are serialized.
@@ -319,6 +323,13 @@ local function getProperties(instance)
         p.looped = instance.Looped
         p.rolloff_max_distance = instance.RollOffMaxDistance
         p.rolloff_min_distance = instance.RollOffMinDistance
+    elseif instance:IsA("Script") or instance:IsA("LocalScript") then
+        p.enabled = safeProperty(instance, "Enabled")
+        if instance:IsA("Script") then
+            local runContext = safeProperty(instance, "RunContext")
+            p.run_context = runContext and runContext.Name or nil
+        end
+        -- Script.Source is intentionally NOT read or sent to the bridge.
     elseif instance:IsA("SurfaceAppearance") then
         p.color_map = instance.ColorMap
         p.metalness_map = instance.MetalnessMap
@@ -1281,11 +1292,132 @@ actionButton("14 · APPLY approved property/link repair", function()
     end)
 end)
 
+
+-- v0.5: Comparing a staged native/hybrid model is permitted.  Earlier actions
+-- remain restricted to a source inside Workspace.  No other service is accepted.
+local function selectedForFidelity()
+    local selected = Selection:Get()
+    assert(#selected == 1, "Select one source model or staged reconstruction")
+    local item = selected[1]
+    local staged = ServerStorage:FindFirstChild("REA_Imports")
+    assert(item:IsA("Model") or item:IsA("Folder") or item:IsA("BasePart"),
+        "Select a Model, Folder or BasePart")
+    assert(item:IsDescendantOf(workspace) or (staged and item:IsDescendantOf(staged)),
+        "Fidelity is limited to Workspace objects and REA_Imports staging")
+    assert(not item:IsA("Terrain"), "Terrain voxels require separate region verification")
+    return item
+end
+
+actionButton("15 · VERIFY map fidelity (read-only)", function()
+    doAction("Measuring captured property and connection accuracy", function()
+        local captureId = assertHexId(captureField.Text, "Reference capture ID")
+        local restored = selectedForFidelity()
+        local current = scanMap(restored)
+        local result = decoded(request("POST", "/v1/fidelity/" .. captureId,
+            HttpService:JSONEncode(current), "application/json"))
+        assert(result.schema == "roblox-rea.fidelity-report.v1", "Invalid fidelity report")
+        local c = result.counts
+        local m = result.measurements
+        local message = "Observed: " .. result.observed_status
+            .. " | objects " .. tostring(m.node_coverage_percent) .. "%"
+            .. " | properties " .. tostring(m.observed_property_match_percent) .. "%"
+            .. " | links " .. tostring(m.observed_reference_match_percent) .. "%"
+            .. "\nMissing: " .. tostring(c.missing) .. " | extra: " .. tostring(c.unexpected)
+            .. " | changed: " .. tostring(c.changed)
+            .. "\nPosition max: " .. tostring(m.maximum_position_error_studs) .. " studs"
+            .. " | rotation max: " .. tostring(m.maximum_rotation_error_degrees) .. " deg"
+            .. "\nMesh shape, Terrain voxels and script source NOT VERIFIED."
+        if #result.changed_details > 0 then
+            message = message .. "\nFirst mismatch: " .. result.changed_details[1].path
+        end
+        planDisplay.Text = message
+        planDisplay.Size = UDim2.new(1, 0, 0, 166)
+        setStatus("Fidelity report ready. Read the numeric measurements above; percentages are metadata-only.")
+    end)
+end)
+
+-- Inventory is deliberately names/classes/placements/flags only.  v1.0 can
+-- add separate, opt-in Studio-only script backup, but source never leaves
+-- the editor through this v0.5 endpoint.
+local SCRIPT_SERVICES = {
+    "Workspace", "ServerScriptService", "ServerStorage", "ReplicatedStorage",
+    "ReplicatedFirst", "StarterPlayer", "StarterGui", "StarterPack",
+}
+local MAX_SCRIPTS = 8000
+local MAX_SCRIPT_BYTES = 1024 * 1024
+local function scriptInventory()
+    assert(not RunService:IsRunning(), "Stop Play/Run to inventory the saved edit-time project")
+    local items = {}
+    for _, serviceName in ipairs(SCRIPT_SERVICES) do
+        local service = game:GetService(serviceName)
+        local stack = {{instance = service, path = serviceName}}
+        while #stack > 0 do
+            local entry = table.remove(stack)
+            local object = entry.instance
+            if object:IsA("Script") or object:IsA("LocalScript") or object:IsA("ModuleScript") then
+                assert(#items < MAX_SCRIPTS, "Too many scripts: inventory was NOT saved")
+                local item = {
+                    path = entry.path,
+                    name = object.Name,
+                    class = object.ClassName,
+                    service = serviceName,
+                    archivable = object.Archivable,
+                }
+                if object:IsA("Script") or object:IsA("LocalScript") then
+                    local enabled = safeProperty(object, "Enabled")
+                    if type(enabled) == "boolean" then item.enabled = enabled end
+                end
+                if object:IsA("Script") then
+                    local ctx = safeProperty(object, "RunContext")
+                    if ctx and (ctx.Name == "Legacy" or ctx.Name == "Server" or ctx.Name == "Client") then
+                        item.run_context = ctx.Name
+                    end
+                end
+                table.insert(items, item)
+            end
+            local children = object:GetChildren()
+            local sibling = {}
+            for _, child in ipairs(children) do
+                local label = child.ClassName .. ":" .. child.Name
+                sibling[label] = (sibling[label] or 0) + 1
+                local path = entry.path .. "/" .. label .. "[" .. sibling[label] .. "]"
+                assert(#path <= 1024, "Script inventory hierarchy path too long")
+                table.insert(stack, {instance = child, path = path})
+            end
+        end
+    end
+    return {
+        schema = "roblox-rea.script-inventory.v1",
+        scope = "authorized-studio-project",
+        mode = "metadata-only",
+        includes_source = false,
+        captured_at = os.time(),
+        place_id = game.PlaceId,
+        items = items,
+    }
+end
+
+actionButton("16 · Inventory server/client scripts (NO source)", function()
+    doAction("Indexing script placements in this editable Studio place", function()
+        local manifest = scriptInventory()
+        local body = HttpService:JSONEncode(manifest)
+        assert(#body <= MAX_SCRIPT_BYTES, "Script inventory too large; NOT sent")
+        local result = decoded(request("POST", "/v1/scripts", body, "application/json"))
+        scriptField.Text = result.inventory_id
+        local kinds = result.by_class
+        setStatus("Saved metadata-only inventory " .. result.inventory_id
+            .. "\nScript " .. tostring(kinds.Script or 0)
+            .. ", LocalScript " .. tostring(kinds.LocalScript or 0)
+            .. ", ModuleScript " .. tostring(kinds.ModuleScript or 0)
+            .. ". No code was read or transmitted.")
+    end)
+end)
+
 plugin.Unloading:Connect(function()
     clearDiffMarkers()
 end)
 
-textLabel("Own/editable Studio projects only. Hybrid preserves native shapes and supplements supported JSON nodes. Doctor never guesses protected assets, scripts or Terrain. Preview before applying any repair.", 80, Color3.fromRGB(166, 175, 191))
+textLabel("Studio projects you own or may edit only. Fidelity scores cover OBSERVED metadata, never mesh triangles, Terrain voxels or Luau source. Script inventory records names/locations only.", 80, Color3.fromRGB(166, 175, 191))
 root.CanvasSize = UDim2.new(0, 0, 0, 0)
 root.AutomaticCanvasSize = Enum.AutomaticSize.Y
 

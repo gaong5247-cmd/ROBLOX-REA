@@ -1,0 +1,86 @@
+{
+  "schema": "roblox-rea.scene.v1",
+  "scene_name": "ExampleArena",
+  "root_id": "n1",
+  "captured_at": 1793980000,
+  "source": {
+    "kind": "example",
+    "place_id": 0
+  },
+  "nodes": [
+    {
+      "id": "n1",
+      "name": "ExampleArena",
+      "class": "Model",
+      "path": "root",
+      "properties": {}
+    },
+    {
+      "id": "n2",
+      "parent_id": "n1",
+      "name": "Floor",
+      "class": "Part",
+      "path": "root/Part:Floor[1]",
+      "properties": {
+        "size": [
+          40,
+          1,
+          40
+        ],
+        "cframe": [
+          0.75,
+          -0.5,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1
+        ],
+        "color": [
+          0.2,
+          0.6,
+          0.3
+        ],
+        "material": "Slate",
+        "anchored": true,
+        "can_collide": true
+      }
+    },
+    {
+      "id": "n3",
+      "parent_id": "n1",
+      "name": "Goal",
+      "class": "Part",
+      "path": "root/Part:Goal[1]",
+      "properties": {
+        "size": [
+          8,
+          6,
+          1
+        ],
+        "cframe": [
+          0,
+          3,
+          19,
+          1,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          1
+        ],
+        "material": "Metal",
+        "anchored": true,
+        "can_collide": true
+      }
+    }
+  ]
+}

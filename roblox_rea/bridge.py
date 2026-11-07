@@ -10,6 +10,8 @@ from urllib.parse import unquote, urlsplit
 from .analysis import analyze_scene, compare_scenes
 from .audit import audit_reconstruction
 from .doctor import plan_repairs
+from .fidelity import assess_fidelity
+from .script_inventory import MAX_BYTES as MAX_SCRIPT_BYTES, summarize_script_inventory
 from .schema import MAX_NATIVE_BYTES, MAX_SCENE_BYTES, SceneError
 from .storage import CaptureStore
 
@@ -68,7 +70,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         path = self._url()
         if path == "/health":
-            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.4.0"})
+            self._reply(200, {"status": "ok", "service": "roblox-rea", "version": "0.5.0"})
             return
         if not self._authorized():
             return
@@ -76,6 +78,14 @@ class BridgeHandler(BaseHTTPRequestHandler):
             store = self.server.store
             if path == "/v1/captures":
                 self._reply(200, {"items": store.list_captures()})
+            elif path == "/v1/scripts":
+                self._reply(200, {"items": store.list_script_inventories()})
+            elif path.startswith("/v1/scripts/"):
+                inventory_id = path.removeprefix("/v1/scripts/")
+                if inventory_id.endswith("/summary"):
+                    self._reply(200, summarize_script_inventory(store.read_script_inventory(inventory_id.removesuffix("/summary"))))
+                else:
+                    self._reply(200, store.read_script_inventory(inventory_id))
             elif path == "/v1/native":
                 self._reply(200, {"items": store.list_native()})
             elif path == "/v1/packages":
@@ -115,10 +125,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         path = self._url()
         compare_id = path.removeprefix("/v1/compare/") if path.startswith("/v1/compare/") else None
         repair_id = path.removeprefix("/v1/repair/") if path.startswith("/v1/repair/") else None
-        if path not in ("/v1/captures", "/v1/native", "/v1/packages") and compare_id is None and repair_id is None:
+        fidelity_id = path.removeprefix("/v1/fidelity/") if path.startswith("/v1/fidelity/") else None
+        if path not in ("/v1/captures", "/v1/native", "/v1/packages", "/v1/scripts") and \
+                compare_id is None and repair_id is None and fidelity_id is None:
             self._reply(404, {"error": "Unknown endpoint"})
             return
-        cap = MAX_NATIVE_BYTES if path == "/v1/native" else MAX_SCENE_BYTES
+        cap = MAX_NATIVE_BYTES if path == "/v1/native" else (MAX_SCRIPT_BYTES if path == "/v1/scripts" else MAX_SCENE_BYTES)
         try:
             size = int(self.headers.get("Content-Length", ""))
         except ValueError:
@@ -133,13 +145,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._reply(400, {"error": "Incomplete request"})
             return
         try:
-            if path in ("/v1/captures", "/v1/packages") or compare_id is not None or repair_id is not None:
+            if path in ("/v1/captures", "/v1/packages", "/v1/scripts") or \
+                    compare_id is not None or repair_id is not None or fidelity_id is not None:
                 if self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                     self._reply(415, {"error": "Expected application/json"})
                     return
                 doc = json.loads(raw.decode("utf-8"))
                 if path == "/v1/packages":
                     result = self.server.store.save_package(doc)
+                elif path == "/v1/scripts":
+                    result = self.server.store.save_script_inventory(doc)
+                elif fidelity_id is not None:
+                    # Read-only; checks only the fields the Studio scanner observed.
+                    result = assess_fidelity(self.server.store.read_capture(fidelity_id), doc)
                 elif compare_id is None and repair_id is None:
                     result = self.server.store.save_capture(doc)
                 elif repair_id is not None:
@@ -155,7 +173,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     return
                 result = self.server.store.save_native(unquote(self.headers.get("X-REA-Name", "Untitled")), raw,
                                                        self.headers.get("X-REA-Kind", "model"))
-            self._reply(201 if compare_id is None and repair_id is None else 200, result)
+            self._reply(200 if any(v is not None for v in (compare_id, repair_id, fidelity_id)) else 201, result)
         except (FileNotFoundError, IsADirectoryError):
             self._reply(404, {"error": "Capture not found"})
         except (SceneError, ValueError, UnicodeError, TypeError) as exc:

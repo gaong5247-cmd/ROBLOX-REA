@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .schema import MAX_NATIVE_BYTES, MAX_SCENE_BYTES, SceneError, validate_scene
 from .rescue import BUNDLE_SCHEMA, MAX_TOTAL_NATIVE_BYTES, validate_bundle_request, package_digest
+from .script_inventory import MAX_BYTES as MAX_SCRIPT_BYTES, validate_script_inventory, summarize_script_inventory
 
 CAPTURE_ID = re.compile(r"^[0-9a-f]{32}$")
 
@@ -27,9 +28,11 @@ class CaptureStore:
         self.captures = self.root / "captures"
         self.native = self.root / "native"
         self.packages = self.root / "packages"
+        self.script_inventories = self.root / "script_inventories"
         self.captures.mkdir(parents=True, exist_ok=True)
         self.native.mkdir(parents=True, exist_ok=True)
         self.packages.mkdir(parents=True, exist_ok=True)
+        self.script_inventories.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _id(capture_id: str) -> str:
@@ -187,6 +190,34 @@ class CaptureStore:
                               "capture_id": doc["capture_id"], "terrain_chunks": len(doc["terrain_chunks"]),
                               "native_bytes": doc["native_bytes"], "stored_at": doc["stored_at"]})
             except (OSError, ValueError):
+                continue
+        return items
+
+    def save_script_inventory(self, inventory: dict) -> dict:
+        validate_script_inventory(inventory)
+        document = dict(inventory)
+        document["inventory_id"] = secrets.token_hex(16)
+        document["stored_at"] = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(document, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(payload) > MAX_SCRIPT_BYTES:
+            raise SceneError("Script inventory is too large")
+        self._write_atomic(self.script_inventories / (document["inventory_id"] + ".json"), payload)
+        return summarize_script_inventory(document)
+
+    def read_script_inventory(self, inventory_id: str) -> dict:
+        path = self.script_inventories / (self._id(inventory_id) + ".json")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if doc.get("inventory_id") != inventory_id:
+            raise SceneError("Script inventory ID mismatch")
+        return validate_script_inventory(doc)
+
+    def list_script_inventories(self, limit: int = 50) -> list[dict]:
+        paths = sorted(self.script_inventories.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        items = []
+        for path in paths[:max(1, min(limit, 100))]:
+            try:
+                items.append(summarize_script_inventory(self.read_script_inventory(path.stem)))
+            except (OSError, ValueError, KeyError):
                 continue
         return items
 

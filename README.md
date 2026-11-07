@@ -2,7 +2,7 @@
 
 **REA-inspired Roblox Studio Map Lab:** scan, back up, compare and reconstruct maps from **projects you own or are authorized to edit**, with local AI/MCP access. Independent project inspired by the [REA](https://github.com/morluto/rea) evidence-driven architecture; written separately, not a fork of REA internals.
 
-> **Status: v0.4, developer preview.** Python unit/integration tests are available. The Studio plugin has not yet been tested inside a live Roblox Studio session. Native RBXM roundtrips and network limits may vary with Studio version and asset rights.
+> **Status: v0.5, developer preview.** Python unit/integration tests are available. The Studio plugin has not yet been tested inside a live Roblox Studio session. Native RBXM roundtrips and network limits may vary with Studio version and asset rights.
 
 ## Features
 
@@ -18,6 +18,8 @@
 | Spatial search | `rea-rbx near` finds objects intersecting a query sphere via their axis-aligned bounds | Fast bounding-box proximity, **not** Roblox navigation |
 | Fidelity audit | `rea-rbx audit` lists unsupported node types, mesh placeholders, unresolved asset references | Honest report of what JSON reconstruction cannot copy |
 | Live difference check | Studio button compares current selection against a saved JSON capture without modifying it | Added/removed/changed hierarchy paths and changed properties |
+| **v0.5: fidelity meter** | Compares source vs. staged restoration by stable hierarchy paths, position/rotation/size tolerances, metadata and internal links | **Observed JSON metadata only**; mesh triangles, Terrain voxels, asset rights, Luau text are unverified |
+| **v0.5: script map** | Metadata-only inventory of Script/LocalScript/ModuleScript names, class, service, Enabled/RunContext, archivable state | **Never reads/transmits Luau Source**; preparation for opt-in authorized v1.0 source backup |
 | v0.4: relationships | Captures in-selection links for supported Welds, Motors, Attachments, constraints and ObjectValue; reconstructs in two passes | Internal references only; cross-selection targets are reported as unknown |
 | v0.4: hybrid restoration | Engine-native `.rbxm` first, then JSON creates missing supported nodes in a **staged** model | Mesh/CSG kept when native original exists; unsupported missing data cannot be synthesized |
 | v0.4: 3D overlay | Highlights added (green), changed (yellow) and missing Part bounding boxes (red) in Studio | Approximate with 60-marker cap, temporary and removable |
@@ -70,6 +72,18 @@ Roblox may prompt for permission to allow a Studio plugin to connect to `127.0.0
 
 > **Important:** `SerializeInstancesAsync` is usable only from Studio plugins or supported Open Cloud Luau execution sessions. This is not a LocalScript, command bar script, or Roblox executor script.
 
+### v0.5: reconstruction fidelity + script-map workflow
+
+1. **Capture first** in your own editable place: select the original Workspace Model and use **1 · Scan selection → save JSON**. Keep the Capture ID. Use native RBXM or Rescue to save the actual objects (v0.5 does not replace native backups).
+2. **Stage the restore** with **3 · Restore native RBXM** or **10 · HYBRID**; select the restored root inside `ServerStorage.REA_Imports`. Only source models in Workspace and staged roots inside `REA_Imports` may be inspected by the v0.5 meter.
+3. Click **15 · VERIFY map fidelity (read-only)** with the original Capture ID in the plugin. The response compares: captured node coverage, exact observed-node metadata, captured property and reference match rates, maximum position error in studs, maximum rotation error in degrees, and maximum axis-size error. Defaults: position <= 0.05 studs, rotation <= 0.1 degree, size <= 0.05 studs.
+4. Click **16 · Inventory server/client scripts (NO source)** for a complete, local metadata inventory across Workspace, ServerScriptService, ServerStorage, ReplicatedStorage, ReplicatedFirst, StarterPlayer (including StarterPlayerScripts/StarterCharacterScripts), StarterGui and StarterPack. The server stores names/paths/class/Enabled/RunContext/Archivable only; no code is accessed, exported or executed. The Script inventory ID is displayed in the UI. Imported staging objects under ServerStorage are also included, so inventory differences after staging do not indicate script activation.
+5. To compare two saved JSON captures from the command line, use `rea-rbx fidelity ORIGINAL_ID RESTORED_ID`, or `rea-rbx fidelity original.json restored.json --files`. For script metadata, use `rea-rbx scripts`, `rea-rbx script-inventory INVENTORY_ID --details`, or `rea-rbx script-compare BEFORE_ID AFTER_ID`.
+
+**Accuracy claims:** A 100% match means **only the properties observable in JSON** matched at the configured tolerances; it does not prove the map looks or behaves identically. Full MeshPart/UnionOperation geometry, Terrain voxels, actual asset access, scripts' Luau bodies and external references are not certified. Path-based matching may be distorted by reordering same-named siblings. A 0% node coverage is not hidden by a high property score. v0.5 never alters the current map during verification.
+
+**Roadmap to v1.0:** Use *only the user's own/authorized Studio project* to inventory services and script trees, then add explicit user-approved backup and restore of edit-time `Script`, `LocalScript` and `ModuleScript` code using Studio-supported APIs such as `ScriptEditorService:GetEditorSource` / `UpdateSourceAsync`, preserving service placement, permissions, client/server run context and version provenance. Prefer a Studio save of the entire `.rbxl`/`.rbxlx` place as an independent recovery copy. Script source export must be opt-in and local-only by default, and restored code must be reviewed before enabling. Roblox executors, live third-party game inspection and access-control bypasses are out of scope. Not yet implemented in v0.5.
+
 ## CLI
 
 ```powershell
@@ -91,6 +105,13 @@ rea-rbx doctor examples/v04_reference.json examples/v04_changed.json --files
 rea-rbx packages
 rea-rbx rescue PACKAGE_ID
 rea-rbx verify PACKAGE_ID
+
+# v0.5: observable reconstruction accuracy and script placement, NO Luau source
+rea-rbx fidelity ORIGINAL_CAPTURE_ID RESTORED_CAPTURE_ID
+rea-rbx fidelity examples/sample_scene.json examples/v05_restored_scene.json --files
+rea-rbx scripts
+rea-rbx script-inventory INVENTORY_ID --details
+rea-rbx script-compare BEFORE_INVENTORY_ID AFTER_INVENTORY_ID
 ```
 
 ### AI / MCP integration
@@ -125,6 +146,8 @@ MCP tools:
 - `propose_map_repairs(reference_capture_id, current_capture_id, limit)` — **read-only** safe repair proposals and blocked issues
 - `list_rescue_packages(limit)` — available signed-by-hash manifests (hashes are **not** signatures)
 - `inspect_rescue_package(package_id)` — show geometry and terrain asset references, never execute source
+- `verify_reconstruction(reference_capture_id, restored_capture_id, position_tolerance, rotation_tolerance)` — measured JSON scene differences, not full renderer fidelity
+- `list_script_inventories(limit)` / `summarize_scripts(inventory_id)` / `inspect_script_locations(inventory_id, limit)` / `compare_script_locations(reference_id, restored_id)` — **metadata only, never Luau source**
 - `verify_rescue_package(package_id)` — validate the local backup's integrity and availability
 
 The MCP endpoint **never** executes user scripts or scans running games. It only reads captures already stored locally. Evidence is limited to the scanned properties, so an AI should identify unknowns rather than hallucinate missing code or terrain. In v0.2, `compare_maps` also returns property-level `modified_details` (with old/new values).
@@ -156,12 +179,14 @@ For a live Studio selection the authenticated, read-only endpoint is `POST /v1/r
 
 The `preview` command generates a **standalone SVG** using bounding footprints projected onto the XZ plane. Open `map_preview.svg` locally in any browser to inspect the scan. Hover a shape to see its hierarchy path. The image uses color/material when captured and outlines collidable parts. The drawing is a schematic, **not a faithful 3D render**: it does not load asset textures or mesh polygons, reproduce Terrain voxels, or infer hidden areas.
 
-### Studio bridge HTTP additions (v0.2–v0.3)
+### Studio bridge HTTP additions (v0.2–v0.5)
 
 With the same local `X-REA-Token` header as the original endpoints:
 
 - `GET /v1/captures/{capture_id}/audit` — structured JSON reconstruction fidelity report.
 - `POST /v1/compare/{capture_id}` — send a `roblox-rea.scene.v1` JSON snapshot and compare it against the stored snapshot; the new snapshot is **never stored**.
+- `POST /v1/fidelity/{reference_capture_id}` — JSON snapshot read-only tolerance check; no map mutation and no screenshot/asset/source inspection.
+- `POST /v1/scripts` / `GET /v1/scripts` / `GET /v1/scripts/{inventory_id}` — strict, bounded metadata-only script inventory. Source/bytecode fields are rejected, even if an external caller tries to submit them.
 - `POST /v1/native` with `X-REA-Kind: terrain` or `model` — write an opaque binary RBXM with SHA-256 metadata.
 - `POST /v1/packages` — store a bounded rescue manifest referencing existing local captures and native files.
 - `GET /v1/packages` — list rescue manifests.
@@ -197,7 +222,7 @@ python -m unittest discover -s tests -v
 python -m compileall roblox_rea
 ```
 
-The tests cover scene validation, path traversal, material/bounds analysis, detailed capture diff, local token checks, JSON HTTP capture, raw binary backup/restore, rotated spatial bounds, SVG escaping, read-only Studio comparison, typed attributes, rescue manifests, Terrain tile overlap checks, and file corruption detection. **The Studio plugin must still be tested in Studio.** CI runs on Windows and Linux using Python 3.10 and 3.12.
+The tests cover scene validation, path traversal, material/bounds analysis, detailed capture diff, local token checks, JSON HTTP capture, raw binary backup/restore, rotated spatial bounds, SVG escaping, read-only Studio comparison, typed attributes, rescue manifests, Terrain tile overlap checks, and file corruption detection. **The Studio plugin must still be tested in a real Studio session (including API permissions and RBXM behavior).** CI runs on Windows and Linux using Python 3.10 and 3.12.
 
 ## License and attribution
 

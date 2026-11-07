@@ -10,6 +10,8 @@ from __future__ import annotations
 from .analysis import analyze_scene, compare_scenes, find_nodes
 from .audit import audit_reconstruction
 from .doctor import plan_repairs
+from .fidelity import assess_fidelity
+from .script_inventory import summarize_script_inventory, compare_script_inventories
 from .spatial import query_nearby
 from .storage import CaptureStore
 
@@ -42,6 +44,43 @@ def create_mcp():
     def compare_maps(before_capture_id: str, after_capture_id: str) -> dict:
         """Compare two stored captures and report added, removed and modified objects."""
         return compare_scenes(store.read_capture(before_capture_id), store.read_capture(after_capture_id))
+
+    @mcp.tool()
+    def verify_reconstruction(reference_capture_id: str, restored_capture_id: str,
+                              position_tolerance: float = 0.05, rotation_tolerance: float = 0.1) -> dict:
+        """Read-only comparison of observable object, transform and relationship fidelity.
+
+        Does not verify Terrain voxel geometry, script source or inaccessible assets.
+        """
+        return assess_fidelity(store.read_capture(reference_capture_id),
+                               store.read_capture(restored_capture_id),
+                               position_tolerance=position_tolerance, rotation_tolerance=rotation_tolerance)
+
+    @mcp.tool()
+    def list_script_inventories(limit: int = 30) -> list[dict]:
+        """List metadata-only inventories from authorized Studio projects; never return Luau source."""
+        return store.list_script_inventories(limit)
+
+    @mcp.tool()
+    def summarize_scripts(inventory_id: str) -> dict:
+        """Count scripts by service and class; no Luau source is captured in v0.5."""
+        return summarize_script_inventory(store.read_script_inventory(inventory_id))
+
+    @mcp.tool()
+    def inspect_script_locations(inventory_id: str, limit: int = 100) -> dict:
+        """Read captured names/paths and service placements; source code was never collected."""
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("limit must be 1..100")
+        document = store.read_script_inventory(inventory_id)
+        items = document["items"]
+        return {"inventory_id": inventory_id, "total": len(items), "items": items[:limit],
+                "truncated": len(items) > limit, "includes_source": False}
+
+    @mcp.tool()
+    def compare_script_locations(reference_id: str, restored_id: str) -> dict:
+        """Report changed script filenames, classes, placements and flags; not source equivalence."""
+        return compare_script_inventories(store.read_script_inventory(reference_id),
+                                          store.read_script_inventory(restored_id))
 
     @mcp.tool()
     def propose_map_repairs(reference_capture_id: str, current_capture_id: str,
